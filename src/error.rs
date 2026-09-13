@@ -14,6 +14,10 @@ use butterfly_fft::error::{PlanError, TransformLengthError};
 #[cfg(feature = "fft")]
 use butterfly_fft::ntt::NttError;
 
+mod hasse;
+
+pub use hasse::HasseError;
+
 /// Failure while validating a geometry or reserving its storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]

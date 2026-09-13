@@ -11,6 +11,7 @@ use crate::geometry::checked_product;
 
 use super::dense::Polynomial;
 use super::karatsuba::karatsuba_multiply;
+use super::monomial::embed_integer;
 
 impl<F: FieldKernels> Polynomial<F> {
     /// Add `other` in place.
@@ -515,24 +516,6 @@ pub const fn binomial_odd(upper: usize, lower: usize) -> bool {
     lower <= upper && (upper & lower) == lower
 }
 
-/// Embed the integer `n` into the field by double-and-add over `ONE`.
-///
-/// The only portable integer embedding: a raw byte pattern is an integer in
-/// a prime field but *not* in a binary extension field, where `3` is
-/// `X + 1`, not the value three.
-fn embed<F: Field>(mut n: u64) -> F::Elem {
-    let mut term = F::Elem::ONE;
-    let mut total = F::Elem::ZERO;
-    while n != 0 {
-        if n & 1 != 0 {
-            total = total.add(term);
-        }
-        term = term.add(term);
-        n >>= 1;
-    }
-    total
-}
-
 /// `C(n, k)` for one base-`p` digit pair, with `k <= n < p`.
 ///
 /// Every factor of the numerator lies in `n − k + 1 ..= n` and every factor
@@ -543,7 +526,7 @@ fn digit_binomial<F: Field>(n: u64, k: u64) -> F::Elem {
     let k = k.min(n - k);
     let mut numerator = F::Elem::ONE;
     let mut denominator = F::Elem::ONE;
-    let mut top = embed::<F>(n);
+    let mut top = embed_integer::<F>(n);
     let mut bottom = F::Elem::ONE;
     for _ in 0..k {
         numerator = numerator.mul(top);

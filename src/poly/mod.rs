@@ -7,6 +7,7 @@ mod dense;
 mod divide;
 mod gcd;
 mod karatsuba;
+pub(crate) mod monomial;
 mod ring;
 mod series;
 

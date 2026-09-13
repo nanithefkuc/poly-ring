@@ -280,8 +280,7 @@ fn multipoint_scratch_reuse_is_exact() {
         .expect("warm-up");
     let warmed = values.clone();
     let other = noise_poly::<Gf8B>(25, 0x3C20);
-    poly_ring::evaluate_multipoint_into(&other, &points, &mut scratch, &mut values)
-        .expect("reuse");
+    poly_ring::evaluate_multipoint_into(&other, &points, &mut scratch, &mut values).expect("reuse");
     assert_eq!(values, other.evaluate_many(&points).expect("horner"));
     assert_ne!(values, warmed);
 }

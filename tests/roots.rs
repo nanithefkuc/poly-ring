@@ -206,9 +206,8 @@ fn roth_ruckenstein_finds_planted_roots() {
     let root_a: Vec<<Gf8B as Field>::Elem> = oracles::noise::<Gf8B>(3, 0xC001);
     let root_b: Vec<<Gf8B as Field>::Elem> = oracles::noise::<Gf8B>(2, 0xC002);
     let rows = bivariate_with_roots::<Gf8B>(0xC000, &[&root_a, &root_b]);
-    let found =
-        roth_ruckenstein_roots(&rows, 4, poly_ring::RothRuckensteinLimits::new(10_000, 64))
-            .expect("roots");
+    let found = roth_ruckenstein_roots(&rows, 4, poly_ring::RothRuckensteinLimits::new(10_000, 64))
+        .expect("roots");
     let to_poly = |coefficients: &[<Gf8B as Field>::Elem]| {
         Polynomial::<Gf8B>::from_coefficients(coefficients).expect("planted")
     };

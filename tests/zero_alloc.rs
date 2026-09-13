@@ -5,11 +5,11 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fgf::field::Field;
-use fgf::{Gf8B, Gf16};
+use fgf::field::{Elem, Field};
+use fgf::{Gf8B, Gf16, Goldilocks, Mersenne31};
 use poly_ring::{
-    ChienScratch, DomainScratch, EvaluationDomain, FieldRootScratch, MultipointScratch, Polynomial,
-    RothRuckensteinLimits, RothRuckensteinScratch, truncated_eea,
+    ChienScratch, DomainScratch, EvaluationDomain, FieldRootScratch, MultiplicityPlan,
+    MultipointScratch, Polynomial, RothRuckensteinLimits, RothRuckensteinScratch, truncated_eea,
 };
 
 struct CountingAllocator;
@@ -239,4 +239,212 @@ fn truncated_eea_reports_its_cost_honestly() {
         .add(&step.b_cofactor.multiply(&b).expect("v·b"))
         .expect("sum");
     assert_eq!(identity, step.remainder);
+}
+
+// ---------------------------------------------------------------------------
+// Weighted multipoint evaluation: first call and steady state.
+//
+// The plan, scratch, and output buffers are the same machinery the
+// multiplicity suites warm; here the counting allocator proves both regimes
+// allocation-free across zero → dense → short coefficient transitions,
+// binary and prime fields, batch 1 and 8, scalar and packed paths.
+
+fn noise_values<F: fgf::kernel::FieldKernels>(len: usize, seed: u64) -> Vec<F::Elem> {
+    let mut state = seed;
+    (0..len)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let bytes = state.to_le_bytes();
+            F::read(&bytes[..F::BYTES])
+        })
+        .collect()
+}
+
+fn multiplicity_points<F: fgf::kernel::FieldKernels>(count: usize) -> Vec<F::Elem> {
+    (0..count)
+        .map(|index| {
+            let mut value = F::Elem::ONE;
+            for _ in 0..index {
+                value = value.add(F::Elem::ONE);
+            }
+            value
+        })
+        .collect()
+}
+
+fn assert_zero_alloc<F>(plan: &MultiplicityPlan<F>, batch: usize, max_count: usize, seeds: [u64; 3])
+where
+    F: poly_ring::PolynomialField,
+{
+    let weight = plan.total_weight();
+    let mut scratch = plan.scratch(batch).expect("scratch");
+    let row_bytes = batch * F::BYTES;
+    let mut packed = vec![0_u8; max_count * row_bytes];
+    let mut output = vec![0_u8; weight * row_bytes];
+
+    let write_input = |packed: &mut [u8], coefficients: &[F::Elem]| {
+        for (degree, value) in coefficients.iter().enumerate() {
+            for lane in 0..batch {
+                let offset = (degree * batch + lane) * F::BYTES;
+                F::write(&mut packed[offset..offset + F::BYTES], *value);
+            }
+        }
+    };
+
+    // Warm-up outside the counted region: initializes runtime dispatch and
+    // any first-touch state, and proves the geometry runs at all.
+    let warm = noise_values::<F>(max_count, seeds[0]);
+    write_input(&mut packed, &warm);
+    plan.evaluate_batch_into(&packed, max_count, batch, &mut scratch, &mut output)
+        .expect("warm-up evaluation");
+
+    for (seed, count) in [
+        (seeds[0], max_count),
+        (seeds[1], 1),
+        (seeds[2], max_count / 2),
+    ] {
+        // zero → dense → short coefficient transitions, outputs compared.
+        let coefficients = noise_values::<F>(count, seed);
+        for byte in packed.iter_mut() {
+            *byte = 0;
+        }
+        write_input(&mut packed, &coefficients);
+        for byte in output.iter_mut() {
+            *byte = 0xAA;
+        }
+        let allocations = count_allocations(|| {
+            plan.evaluate_batch_into(
+                &packed[..count * row_bytes],
+                count,
+                batch,
+                &mut scratch,
+                &mut output,
+            )
+            .expect("counted evaluation");
+        });
+        assert_eq!(allocations, 0, "evaluation must not allocate");
+
+        // The scalar path must be equally allocation-free.
+        if batch == 1 {
+            let mut scalar_scratch = plan.scratch(1).expect("scalar scratch");
+            let mut scalar_output = vec![F::Elem::ZERO; weight];
+            let coefficients_vec: Vec<F::Elem> = coefficients.clone();
+            let allocations = count_allocations(|| {
+                plan.evaluate_into(&coefficients_vec, &mut scalar_scratch, &mut scalar_output)
+                    .expect("scalar evaluation");
+            });
+            assert_eq!(allocations, 0, "scalar evaluation must not allocate");
+            // And it agrees with the batch run, row for row.
+            for row in 0..weight {
+                assert_eq!(
+                    F::read(&output[row * F::BYTES..][..F::BYTES]),
+                    scalar_output[row]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn weighted_evaluation_is_steady_state_zero_alloc() {
+    fn run<F: poly_ring::PolynomialField>() {
+        let plan = MultiplicityPlan::<F>::new(&multiplicity_points::<F>(4), &[1, 2, 4, 3], 97)
+            .expect("plan");
+        assert_zero_alloc::<F>(&plan, 1, 97, [0x5EED_1000, 0x5EED_1001, 0x5EED_1002]);
+        assert_zero_alloc::<F>(&plan, 8, 97, [0x5EED_2000, 0x5EED_2001, 0x5EED_2002]);
+    }
+    run::<Gf8B>();
+    run::<Goldilocks>();
+}
+
+/// First-call counting: every coefficient set is evaluated by a freshly
+/// built scratch's **first** call, with no warm-up anywhere in between —
+/// the constructors pre-cache their transform plans, so even the first
+/// call must allocate nothing. The scalar lane gets its own fresh scratch.
+fn assert_first_call_zero_alloc<F>(
+    plan: &MultiplicityPlan<F>,
+    batch: usize,
+    max_count: usize,
+    seeds: [u64; 2],
+) where
+    F: poly_ring::PolynomialField,
+{
+    let weight = plan.total_weight();
+    let row_bytes = batch * F::BYTES;
+    let mut packed = vec![0_u8; max_count * row_bytes];
+    let mut output = vec![0_u8; weight * row_bytes];
+
+    let write_input = |packed: &mut [u8], coefficients: &[F::Elem]| {
+        for (degree, value) in coefficients.iter().enumerate() {
+            for lane in 0..batch {
+                let offset = (degree * batch + lane) * F::BYTES;
+                F::write(&mut packed[offset..offset + F::BYTES], *value);
+            }
+        }
+    };
+
+    // zero → dense → short, each from its own fresh scratch.
+    let zero = vec![F::Elem::ZERO; max_count];
+    let dense = noise_values::<F>(max_count, seeds[0]);
+    let short = noise_values::<F>(1, seeds[1]);
+    for (label, coefficients) in [("zero", &zero), ("dense", &dense), ("short", &short)] {
+        let count = coefficients.len();
+        for byte in packed.iter_mut() {
+            *byte = 0;
+        }
+        write_input(&mut packed, coefficients);
+        for byte in output.iter_mut() {
+            *byte = 0xAA;
+        }
+
+        let mut scratch = plan.scratch(batch).expect("scratch");
+        let allocations = count_allocations(|| {
+            plan.evaluate_batch_into(
+                &packed[..count * row_bytes],
+                count,
+                batch,
+                &mut scratch,
+                &mut output,
+            )
+            .expect("first batch evaluation");
+        });
+        assert_eq!(
+            allocations, 0,
+            "first batch call ({label}) must not allocate"
+        );
+
+        let mut scalar_scratch = plan.scratch(1).expect("scalar scratch");
+        let coefficients_vec = coefficients.clone();
+        let mut scalar_output = vec![F::Elem::ZERO; weight];
+        let allocations = count_allocations(|| {
+            plan.evaluate_into(&coefficients_vec, &mut scalar_scratch, &mut scalar_output)
+                .expect("first scalar evaluation");
+        });
+        assert_eq!(
+            allocations, 0,
+            "first scalar call ({label}) must not allocate"
+        );
+
+        // The first-call lanes agree with each other, row for row (lane 0).
+        for row in 0..weight {
+            assert_eq!(
+                F::read(&output[row * row_bytes..][..F::BYTES]),
+                scalar_output[row]
+            );
+        }
+    }
+}
+
+#[test]
+fn first_call_from_a_fresh_scratch_is_zero_alloc() {
+    fn run<F: poly_ring::PolynomialField>() {
+        let plan = MultiplicityPlan::<F>::new(&multiplicity_points::<F>(4), &[1, 2, 4, 3], 97)
+            .expect("plan");
+        assert_first_call_zero_alloc::<F>(&plan, 1, 97, [0x5EED_3000, 0x5EED_3001]);
+        assert_first_call_zero_alloc::<F>(&plan, 8, 97, [0x5EED_4000, 0x5EED_4001]);
+    }
+    run::<Gf8B>();
+    run::<Mersenne31>();
 }

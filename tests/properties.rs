@@ -4,8 +4,8 @@
 use fgf::field::Elem;
 use fgf::kernel::FieldKernels;
 use fgf::{Gf8B, Gf16};
-use proptest::prelude::*;
 use poly_ring::Polynomial;
+use proptest::prelude::*;
 
 fn noise<F: FieldKernels>(len: usize, seed: u64) -> Polynomial<F> {
     let mut state = seed;

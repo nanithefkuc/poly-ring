@@ -97,8 +97,10 @@
 extern crate alloc;
 
 pub mod cost;
+pub mod derivative;
 pub mod error;
 pub mod eval;
+pub mod jet;
 pub mod poly;
 pub mod roots;
 
@@ -110,18 +112,22 @@ pub use cost::{
     BackendClass, BaseRootBackend, BaseRootCostKey, ProductBackend, ProductCostKey, RootBackend,
     RootCostKey, chien_equal_degree_crossover, select_base_roots, select_product, select_root,
 };
-pub use error::{ConfigError, DomainError, EvalError, PolynomialError, ProductError, RootError};
+pub use derivative::DerivativePlan;
+pub use error::{
+    ConfigError, DomainError, EvalError, HasseError, PolynomialError, ProductError, RootError,
+};
 pub use eval::{
     DomainScratch, EvaluationBackend, EvaluationDomain, MODULE_INTERPOLATION_CROSSOVER,
-    MULTIPOINT_EVAL_CROSSOVER, MultipointScratch, NewtonBasis, RemainderScratch, RemainderTree,
-    evaluate_multipoint, evaluate_multipoint_into, interpolate_lagrange, interpolate_newton,
-    interpolate_newton_into,
+    MULTIPOINT_EVAL_CROSSOVER, MultiplicityPlan, MultiplicityScratch, MultipointScratch,
+    NewtonBasis, RemainderScratch, RemainderTree, evaluate_multipoint, evaluate_multipoint_into,
+    interpolate_lagrange, interpolate_newton, interpolate_newton_into,
 };
 #[cfg(feature = "fft")]
 pub use eval::{
     TransformScratch, evaluate_coset_into, evaluate_subspace, evaluate_subspace_into,
     interpolate_subspace, interpolate_subspace_into,
 };
+pub use jet::{JetPlan, JetScratch};
 #[cfg(feature = "fft")]
 pub use poly::{
     AFFT_BATCH4_CROSSOVER, AFFT_BATCH8_CROSSOVER, AFFT_BATCH16_CROSSOVER, AFFT_PRODUCT_CROSSOVER,

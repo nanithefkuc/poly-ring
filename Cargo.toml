@@ -47,9 +47,15 @@ ark-poly = "0.6"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 lambdaworks-math = "0.13"
 proptest = { version = "1", default-features = true }
+# Hasse competitor panel only (BENCHMARKS.md); never a runtime dependency.
+winter-math = "=0.13.1"
 
 [[bench]]
 name = "poly"
+harness = false
+
+[[bench]]
+name = "hasse"
 harness = false
 
 [[bench]]
@@ -62,6 +68,8 @@ name = "prepared"
 harness = false
 required-features = ["internals"]
 
+[[example]]
+name = "weighted_eval"
 
 [profile.bench]
 lto = "thin"
