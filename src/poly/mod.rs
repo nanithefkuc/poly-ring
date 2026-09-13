@@ -9,11 +9,9 @@ mod divide;
 mod gcd;
 mod karatsuba;
 pub(crate) mod monomial;
+mod multivariate;
 mod ring;
 mod series;
-
-pub use bivariate::{BivariatePolynomial, WeightedTerm};
-pub use dense::Polynomial;
 
 #[cfg(feature = "fft")]
 pub use afft::{
@@ -23,10 +21,14 @@ pub use afft::{
     multiply_batch_truncated, multiply_batch_truncated_with,
     substitute_y_affine_rows_truncated_into,
 };
+pub use bivariate::{BivariatePolynomial, WeightedTerm};
 pub use convolution::{ConvolutionScratch, PolynomialField, multiply_rows_into};
 #[cfg(feature = "internals")]
 pub use convolution::{ProductRoute, multiply_rows_route_into};
+pub use dense::Polynomial;
 pub use gcd::{BezoutRelation, TruncatedEea, truncated_eea};
 pub use karatsuba::{KARATSUBA_CROSSOVER, karatsuba_multiply};
+pub use monomial::{MonomialOrder, MultiIndex, Term};
+pub use multivariate::SparsePolynomial;
 pub use ring::{binomial, binomial_odd};
 pub use series::series_divide;

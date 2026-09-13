@@ -136,9 +136,9 @@ pub use poly::{
     substitute_y_affine_rows_truncated_into,
 };
 pub use poly::{
-    BezoutRelation, BivariatePolynomial, ConvolutionScratch, KARATSUBA_CROSSOVER, Polynomial,
-    PolynomialField, TruncatedEea, WeightedTerm, binomial, binomial_odd, karatsuba_multiply,
-    multiply_rows_into, series_divide, truncated_eea,
+    BezoutRelation, BivariatePolynomial, ConvolutionScratch, KARATSUBA_CROSSOVER, MonomialOrder,
+    MultiIndex, Polynomial, PolynomialField, SparsePolynomial, Term, TruncatedEea, WeightedTerm,
+    binomial, binomial_odd, karatsuba_multiply, multiply_rows_into, series_divide, truncated_eea,
 };
 #[cfg(feature = "fft")]
 pub use poly::{PolynomialProductScratch, ProductStrategy, multiply_batch_truncated};
