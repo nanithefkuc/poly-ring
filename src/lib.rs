@@ -1,19 +1,22 @@
-//! Univariate polynomial arithmetic over binary and prime fields.
+//! The polynomial ring over binary and prime fields.
 //!
-//! > Given polynomials over GF(2^m), compute in the ring — multiply, divide,
-//! > gcd, evaluate, find roots, interpolate, and work modulo x^t, and never
-//! > construct a code, a matrix, or a transform buffer. Field arithmetic comes
-//! > from `fgf`; transform-domain evaluation/interpolation from
-//! > `butterfly-fft`; matrices from `gfm`. This crate receives polynomials and
-//! > returns polynomials.
+//! > Given field elements and polynomials, compute in the ring — multiply,
+//! > divide, differentiate, evaluate, interpolate, find roots, and work
+//! > modulo x^t — and never construct a code, a matrix, a transform buffer,
+//! > or a decoder. Field arithmetic comes from `fgf`; structured-domain
+//! > evaluation/interpolation composes `butterfly-fft`. This crate receives
+//! > polynomials and returns polynomials.
 //!
 //! # The object
 //!
 //! [`Polynomial<F>`] is the dense monomial-basis polynomial over a
 //! `fgf` field: coefficients stored as `fgf`'s packed little-endian bytes, low
 //! degree first, always normalized (no trailing zero coefficients), with the
-//! zero polynomial represented by the empty buffer. Every operation in this
-//! crate returns or consumes that one type.
+//! zero polynomial represented by the empty buffer. [`BivariatePolynomial<F>`]
+//! is the row-oriented dense bivariate form the interpolation engines
+//! consume; [`SparsePolynomial<F, N>`] is the sparse multivariate form with
+//! explicit [`MonomialOrder`] ranking. Conversions between the dense and
+//! sparse forms are explicit and lossless.
 //!
 //! Field arithmetic is composed, never re-hosted: coefficient vectors run
 //! through [`fgf::ops`] packed kernels above the measured lane-bytes
@@ -21,16 +24,22 @@
 //! Structured-domain (additive subspace / affine coset) evaluation and
 //! interpolation compose `butterfly-fft` transforms under the default-on
 //! `fft` feature; the arbitrary-point Horner and subproduct-tree paths are
-//! this crate's own.
+//! this crate's own. Hasse derivatives, jets, and the sparse multivariate
+//! surface are exact over every characteristic — binomial factors are taken
+//! in the field's characteristic, never as parity masks or factorials.
 //!
 //! # Layout
 //!
 //! - [`poly`] — the ring: construction, add/scale/shift/multiply
-//!   (schoolbook, Karatsuba, AFFT), division, gcd / extended gcd /
-//!   truncated EEA (the key-equation primitive), and truncated power-series
-//!   inversion.
+//!   (schoolbook, Karatsuba, AFFT), the dense bivariate object, sparse
+//!   multivariate elements with monomial orders, division, gcd / extended
+//!   gcd / truncated EEA (the key-equation primitive), and truncated
+//!   power-series inversion.
+//! - [`derivative`] and [`jet`] — prepared Hasse derivatives of one fixed
+//!   order, and the truncated Taylor translation `f(a + T) mod T^s`.
 //! - [`eval`] — Horner and subproduct-tree evaluation, Newton and Lagrange
-//!   interpolation, [`eval::EvaluationDomain`] backend selection, and the
+//!   interpolation, multiplicity-weighted multipoint evaluation, Hermite
+//!   reconstruction, [`eval::EvaluationDomain`] backend selection, and the
 //!   `fft`-gated transform composition.
 //! - [`roots`] — Chien search, equal-degree (Cantor–Zassenhaus) base-field
 //!   roots, linearized/affine solving, and Roth–Ruckenstein / Alekhnovich
@@ -41,8 +50,8 @@
 //!
 //! | Feature | Effect |
 //! | --- | --- |
-//! | default (`std`, `simd`, `fft`) | full ring, transforms, root machinery |
-//! | `--no-default-features` | `no_std` core ring, gcd/EEA, division, Chien, Horner, power series; no `butterfly-fft` |
+//! | default (`std`, `simd`, `fft`) | full ring, transforms, Hasse plans, roots |
+//! | `--no-default-features` | `no_std` core ring: gcd/EEA, division, Chien, Horner, Hasse plans, sparse multivariate arithmetic, power series; no `butterfly-fft` |
 //! | `fft` without `std` | transform composition available in `no_std` builds |
 //! | `parallel` | off-by-default placeholder for batch-axis parallelism |
 //! | `internals` | unstable benchmarking surface, no compatibility promise |
@@ -91,7 +100,11 @@
     clippy::module_name_repetitions,
     // Ring identities read as equations; the trait method names that trip
     // this lint are the mathematical ones.
-    clippy::similar_names
+    clippy::similar_names,
+    // `as_chunks::<F::BYTES>()` needs a const generic depending on a
+    // generic parameter, which stable Rust rejects; the iterator form is
+    // the only spelling that compiles for every field width.
+    clippy::chunks_exact_to_as_chunks
 )]
 
 extern crate alloc;

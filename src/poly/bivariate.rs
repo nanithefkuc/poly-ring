@@ -15,7 +15,9 @@ use fgf::kernel::FieldKernels;
 
 use super::binomial;
 use super::dense::Polynomial;
-use crate::error::{ConfigError, PolynomialError, ProductError};
+#[cfg(feature = "fft")]
+use crate::error::ProductError;
+use crate::error::{ConfigError, PolynomialError};
 use crate::geometry::try_zeroed;
 
 /// Leading monomial under a `(1, y_weight)` weighted order.

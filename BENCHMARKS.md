@@ -55,10 +55,71 @@ order) is stable under retuning.
 (the latter inherited from `gs-engine`). Both measured on this crate's
 `poly` bench harness; retune with `cargo bench --bench poly`.
 
+## Hasse derivative / jet panels (absorbed from `hasse` at the merger)
+
+Absorbed from the `hasse` crate at the merger; re-measure on this crate's
+harness before retuning. Every side runs the identical Goldilocks field
+`p = 2^64 - 2^32 + 1`: coefficients and points generated once from the
+fixed LCG constants, reduced, converted per library; outputs cross-checked
+for equality before timing. Commands: `cargo bench --bench hasse` and
+`cargo bench --bench competitors`.
+
+Named competitors (dev-only): ark-poly 0.6 / ark-ff 0.6 (multiplicity one,
+per-point public evaluator loop — no multipoint tree over arbitrary points),
+lambdaworks-math 0.13 (same shape), winter-math 0.13.1 (`polynom::eval_many`).
+**No direct competitor found** for multiplicity above one: the panel records
+an explicitly labelled composed baseline (independent `u128` binomials, then
+each library's per-order evaluation loop), asserted equal to this crate's
+jets before timing.
+
+Multiplicity one, steady-state evaluation (µs, median):
+
+| Geometry | ours | ark-poly | lambdaworks | winter-math |
+| --- | --- | --- | --- | --- |
+| points=256, D=256 | **204** | 429 | 318 | 207 |
+| points=1024, D=1024 | **2.62 ms** | 6.87 ms | 4.98 ms | 3.28 ms |
+
+Plan construction is a one-time cost per request geometry: 453 µs at
+256/256, 3.49 ms at 1024/1024.
+
+Composed Hasse baseline, points=64, D=64, one-shot (µs, median; ours
+includes plan, scratch, and output; libraries include derivative
+preparation):
+
+| Side | s=2 | s=4 | s=8 | s=16 |
+| --- | --- | --- | --- | --- |
+| ours `MultiplicityPlan` | 342 | 614 | 1.42 ms | 4.34 ms |
+| ark-poly composed | 53 | 222 | 837 | 2.72 ms |
+| lambdaworks composed | 65 | 225 | 792 | 2.66 ms |
+| winter-math composed | 50 | 197 | 738 | 2.56 ms |
+
+Prepared:
+
+| Side | s=2 | s=4 | s=8 | s=16 |
+| --- | --- | --- | --- | --- |
+| ours `MultiplicityPlan` | 51 | 166 | 627 | 2.43 ms |
+| ark-poly composed | 27 | 75 | 184 | 371 |
+| lambdaworks composed | 40 | 77 | 151 | 283 |
+| winter-math composed | 25 | 49 | 94 | 175 |
+
+At this geometry the composed baselines win from s=4 up: `s` evaluations of
+a degree-64 polynomial cost less than the remainder descent that produces
+all `s·64` jet entries in one pass. The descent's structure — one
+quasi-linear pass plus one prepared jet per point — is the asymptotic
+argument; this small panel does not demonstrate it, and no larger panel has
+been run.
+
+`benches/hasse.rs` separates plan construction, scratch construction, and
+steady-state execution over Gf8B, Gf16, Mersenne31, Goldilocks, and
+QuadMersenne31: point counts 16/64/256/1024 (skipped, never shrunk, where
+the count exceeds the field's element count), uniform multiplicities
+1/2/4/8/16/64, degrees around W/2, W, and 2W, a `[1,2,4,8]`-repeat panel,
+and a single heavy leaf.
+
 ## Named competitors (ground rule 7)
 
-Non-copyleft libraries covering this crate's domain (univariate polynomials
-over GF(2^m)), ranked by coverage:
+Non-copyleft libraries covering this crate's domain (polynomial rings over
+binary and prime fields), ranked by coverage:
 
 | Library | License | GF(2^m) coefficients | Ring ops | Transform domain | Measured? |
 | --- | --- | --- | --- | --- | --- |

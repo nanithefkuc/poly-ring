@@ -1,4 +1,4 @@
-# univariate
+# poly-ring
 
 > Given polynomials over GF(2^m), compute in the ring — multiply, divide, gcd,
 > evaluate, find roots, interpolate, and work modulo x^t, and never construct a
@@ -15,19 +15,25 @@
    multipoint eval and interpolation call `TransformPlan` + `monomial↔novel`;
    the crate reimplements only the arbitrary-point (Horner / subproduct-tree)
    path. No second additive-FFT.
-3. **One polynomial type, packed and canonical.** `Polynomial<F>` stores
-   `Vec<u8>` packed LE, always normalized; the zero polynomial is the empty
-   buffer.
-4. **No `unsafe`.** Forbidden at the crate root. The only SIMD is upstream.
-5. **Steady-state zero allocation.** Every hot op has a `*_into` / scratch
+3. **One ring, canonical representations.** `Polynomial<F>` stores `Vec<u8>`
+   packed LE, always normalized; the zero polynomial is the empty buffer.
+   `BivariatePolynomial<F>` keeps canonical rows with trailing zero `Y`
+   rows dropped; `SparsePolynomial<F, N>` keeps terms sorted, merged, and
+   zero-free. Conversions between them are explicit, never implicit.
+4. **Characteristic-exact, not binary-first.** Hasse factors, `Y`
+   substitutions, and root signs run through `binomial::<F>` and the
+   field's negation. A parity mask is a characteristic-two optimization,
+   never the general rule.
+5. **No `unsafe`.** Forbidden at the crate root. The only SIMD is upstream.
+6. **Steady-state zero allocation.** Every hot op has a `*_into` / scratch
    form; proven by `tests/zero_alloc.rs`.
-6. **`inv(0) == 0` is inherited.** Division and root logic test pivots/roots
+7. **`inv(0) == 0` is inherited.** Division and root logic test pivots/roots
    with `is_zero()`; never infer "not a root" from a division result.
-7. **Numbers live in `BENCHMARKS.md`.** Doc comments state the decision and
+8. **Numbers live in `BENCHMARKS.md`.** Doc comments state the decision and
    the mechanism and point there.
-8. **Do not land a performance change on reasoning alone.** A/B it, keep both
+9. **Do not land a performance change on reasoning alone.** A/B it, keep both
    twins compiled, record the ratio.
-9. **Oracles stay independent.** An implementation is never its own test.
+10. **Oracles stay independent.** An implementation is never its own test.
 
 ## Tooling
 
@@ -42,10 +48,12 @@ documented once in the umbrella's root `AGENTS.md`.
 - **`MIRI` is empty** — non-negotiable 4, no `unsafe` at the crate root. `just
   unsafe-check` reports that and skips. `COV_IGNORE` is empty too: every line
   counts toward the 95% gate.
-- **Bench targets:** `poly`, `prepared`, `competitors` — `just bench-save poly`
+- **Bench targets:** `poly`, `hasse`, `prepared`, `competitors` — `just bench-save poly`
   before the change, `just bench poly` after. `prepared` needs `internals`; the
   bench recipes pass `--all-features`, so it builds. `competitors` is the
-  dev-only external panel.
+  dev-only external panel (ring panel over 8-byte fields, Hasse panel over
+  the shared Goldilocks prime including the labelled composed baseline for
+  multiplicity above one).
 - The cross-builds and `+1.89.0` check below are `just msrv` and manual `cargo
   build --target …`; `justfile` is a byte-identical vendored copy that must not
   be edited here (the umbrella's `just drift` check fails on it), and anything
@@ -86,5 +94,5 @@ documented once in the umbrella's root `AGENTS.md`.
 - Benchmarks go through `criterion`; baselines are deliberately not committed.
   Measurement hygiene: interleave base/new, take the maximum of at least three
   runs, keep an unchanged 1.00x control, treat 16–128 byte buffers as noise.
-- Commit subjects are at most ~10 words, shaped `univariate: short verb
+- Commit subjects are at most ~10 words, shaped `poly-ring: short verb
   phrase`. What changed and why lives in the pull request and `CHANGELOG.md`.

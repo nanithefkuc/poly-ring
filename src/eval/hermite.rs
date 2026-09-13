@@ -1,7 +1,7 @@
 //! Hermite interpolation: one polynomial from every point's local jet.
 //!
 //! The inverse of multiplicity-weighted evaluation. Where
-//! [`crate::eval::MultiplicityPlan`](crate::eval::MultiplicityPlan) turns a polynomial
+//! [`MultiplicityPlan`](crate::eval::MultiplicityPlan) turns a polynomial
 //! into the packed jet vector `D^[j]f(a_i)` for `j < s_i`, this module turns
 //! that vector back into the unique polynomial of degree below the total
 //! weight `W = Σ s_i` matching every constraint. The bridge is a prepared
@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use crate::error::{ConfigError, HermiteError, PolynomialError};
 use crate::jet::JetPlan;
 use crate::poly::{Polynomial, PolynomialField};
-use fgf::field::Elem;
+use fgf::field::{Elem, Field};
 
 /// A prepared Hermite interpolation request: points with multiplicities.
 ///
@@ -71,18 +71,9 @@ impl<F: PolynomialField> HermitePlan<F> {
 
         // Canonicalize once: a noncanonical prime lane must never reach a
         // packed kernel, a stored modulus, or a point comparison.
-        let mut canonical = Vec::new();
-        canonical.try_reserve_exact(points.len()).map_err(|_| {
-            HermiteError::Config(ConfigError::AllocationFailed {
-                context: "Hermite points",
-                elements: points.len(),
-                element_size: core::mem::size_of::<F::Elem>(),
-            })
-        })?;
-        for &point in points {
-            canonical.push(point.add(F::Elem::ZERO));
-        }
+        let canonical = canonical_points::<F>(points)?;
 
+        // Checked offsets and total weight.
         let mut offsets = Vec::new();
         offsets.try_reserve_exact(points.len() + 1).map_err(|_| {
             HermiteError::Config(ConfigError::AllocationFailed {
@@ -115,27 +106,7 @@ impl<F: PolynomialField> HermitePlan<F> {
             }
         }
 
-        // Active moduli: (X − a_i)^{s_i}, by repeated multiplication by
-        // X − a_i = X + (−a_i).
-        let mut moduli = Vec::new();
-        moduli.try_reserve_exact(canonical.len()).map_err(|_| {
-            HermiteError::Config(ConfigError::AllocationFailed {
-                context: "Hermite moduli",
-                elements: canonical.len(),
-                element_size: core::mem::size_of::<Polynomial<F>>(),
-            })
-        })?;
-        for (point, &weight) in canonical.iter().zip(multiplicities) {
-            if weight == 0 {
-                continue;
-            }
-            let negated = point.neg();
-            let mut modulus = Polynomial::one()?;
-            for _ in 0..weight {
-                modulus = modulus.multiply_x_plus(negated)?;
-            }
-            moduli.push(modulus);
-        }
+        let moduli = weighted_moduli::<F>(&canonical, multiplicities)?;
 
         // M = ∏ m_i; empty and all-zero requests interpolate to zero, so
         // the product stays the empty modulus there.
@@ -144,35 +115,7 @@ impl<F: PolynomialField> HermitePlan<F> {
             product = product.multiply(modulus)?;
         }
 
-        // CRT weights: M_i = M / m_i is coprime to m_i (distinct positive
-        // weights imply distinct points), so the Bézout relation of
-        // (M_i, m_i) has a constant gcd; its cofactor rescaled by the
-        // inverse of that constant is M_i^{-1} mod m_i. A non-constant or
-        // zero gcd would mean the moduli share a factor and the division
-        // contract is broken — that is a NonExactDivision failure, never an
-        // invented inverse.
-        let mut weights = Vec::new();
-        weights.try_reserve_exact(moduli.len()).map_err(|_| {
-            HermiteError::Config(ConfigError::AllocationFailed {
-                context: "Hermite CRT weights",
-                elements: moduli.len(),
-                element_size: core::mem::size_of::<Polynomial<F>>(),
-            })
-        })?;
-        for modulus in &moduli {
-            let cofactor = product.exact_divide(modulus)?;
-            let relation = cofactor.gcd_ext(modulus)?;
-            let unit: <F as fgf::field::Field>::Elem = match relation.gcd.degree() {
-                Some(0) => relation.gcd.coefficient(0),
-                _ => return Err(PolynomialError::NonExactDivision.into()),
-            };
-            if unit.is_zero() {
-                return Err(PolynomialError::NonExactDivision.into());
-            }
-            let inverse = relation.a_cofactor.scaled(unit.inv());
-            let weight = cofactor.multiply(&inverse)?.remainder(&product)?;
-            weights.push(weight);
-        }
+        let weights = crt_weights::<F>(&moduli, &product)?;
 
         // Jet translations: g(T) ↦ g(X − a_i), exact because
         // deg g_i < s_i. A translation plan computes q(p + T), so the
@@ -233,7 +176,8 @@ impl<F: PolynomialField> HermitePlan<F> {
 
     /// Output offsets: `offsets[0] = 0`, `offsets[i+1] = offsets[i] +
     /// multiplicities[i]`. Input position `offsets[i] + j` is `D^[j]f(a_i)`,
-    /// the same layout [`crate::eval::MultiplicityPlan`] writes.
+    /// the same layout [`MultiplicityPlan`](crate::eval::MultiplicityPlan)
+    /// writes.
     #[must_use]
     pub fn offsets(&self) -> &[usize] {
         &self.offsets
@@ -248,9 +192,10 @@ impl<F: PolynomialField> HermitePlan<F> {
     /// Reconstruct the unique polynomial of degree below the total weight
     /// whose local jets at the prepared points are `values`.
     ///
-    /// `values` uses exactly the [`crate::eval::MultiplicityPlan`] output order: input
-    /// position `offsets[i] + j` is the value of `D^[j]f(a_i)`, and the
-    /// length must equal [`Self::total_weight`]. Empty and all-zero-weight
+    /// `values` uses exactly the
+    /// [`MultiplicityPlan`](crate::eval::MultiplicityPlan) output order:
+    /// input position `offsets[i] + j` is the value of `D^[j]f(a_i)`, and
+    /// the length must equal [`Self::total_weight`]. Empty and all-zero
     /// requests reconstruct the zero polynomial.
     ///
     /// # Errors
@@ -297,6 +242,88 @@ impl<F: PolynomialField> HermitePlan<F> {
         result.normalize();
         Ok(result)
     }
+}
+
+/// Canonical representatives of the caller's points.
+fn canonical_points<F: PolynomialField>(points: &[F::Elem]) -> Result<Vec<F::Elem>, HermiteError> {
+    let mut canonical = Vec::new();
+    canonical.try_reserve_exact(points.len()).map_err(|_| {
+        HermiteError::Config(ConfigError::AllocationFailed {
+            context: "Hermite points",
+            elements: points.len(),
+            element_size: core::mem::size_of::<F::Elem>(),
+        })
+    })?;
+    for &point in points {
+        canonical.push(point.add(F::Elem::ZERO));
+    }
+    Ok(canonical)
+}
+
+/// The active moduli `(X − a_i)^{s_i}`, by repeated multiplication by
+/// `X − a_i = X + (−a_i)`; zero-weight entries build nothing.
+fn weighted_moduli<F: PolynomialField>(
+    points: &[F::Elem],
+    multiplicities: &[usize],
+) -> Result<Vec<Polynomial<F>>, HermiteError> {
+    let mut moduli = Vec::new();
+    moduli.try_reserve_exact(points.len()).map_err(|_| {
+        HermiteError::Config(ConfigError::AllocationFailed {
+            context: "Hermite moduli",
+            elements: points.len(),
+            element_size: core::mem::size_of::<Polynomial<F>>(),
+        })
+    })?;
+    for (point, &weight) in points.iter().zip(multiplicities) {
+        if weight == 0 {
+            continue;
+        }
+        let negated = point.neg();
+        let mut modulus = Polynomial::one()?;
+        for _ in 0..weight {
+            modulus = modulus.multiply_x_plus(negated)?;
+        }
+        moduli.push(modulus);
+    }
+    Ok(moduli)
+}
+
+/// The CRT blending polynomials `B_i = (M_i · (M_i^{-1} mod m_i)) mod M`.
+///
+/// `M_i = M / m_i` is coprime to `m_i` (distinct positive weights imply
+/// distinct points), so the Bézout relation of `(M_i, m_i)` has a constant
+/// gcd; its cofactor rescaled by the inverse of that constant is
+/// `M_i^{-1} mod m_i`. A non-constant or zero gcd would mean the moduli
+/// share a factor and the division contract is broken — that is a
+/// [`PolynomialError::NonExactDivision`] failure, never an invented
+/// inverse.
+fn crt_weights<F: PolynomialField>(
+    moduli: &[Polynomial<F>],
+    product: &Polynomial<F>,
+) -> Result<Vec<Polynomial<F>>, HermiteError> {
+    let mut weights = Vec::new();
+    weights.try_reserve_exact(moduli.len()).map_err(|_| {
+        HermiteError::Config(ConfigError::AllocationFailed {
+            context: "Hermite CRT weights",
+            elements: moduli.len(),
+            element_size: core::mem::size_of::<Polynomial<F>>(),
+        })
+    })?;
+    for modulus in moduli {
+        let cofactor = product.exact_divide(modulus)?;
+        let relation = cofactor.gcd_ext(modulus)?;
+        let unit: <F as Field>::Elem = match relation.gcd.degree() {
+            Some(0) => relation.gcd.coefficient(0),
+            _ => return Err(PolynomialError::NonExactDivision.into()),
+        };
+        if unit.is_zero() {
+            return Err(PolynomialError::NonExactDivision.into());
+        }
+        let inverse = relation.a_cofactor.scaled(unit.inv());
+        let weight = cofactor.multiply(&inverse)?.remainder(product)?;
+        weights.push(weight);
+    }
+    Ok(weights)
 }
 
 impl<F: PolynomialField> core::fmt::Debug for HermitePlan<F> {

@@ -6,6 +6,34 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- `poly-ring` opens at 0.1.0 as the ecosystem's single polynomial-ring
+  crate, carrying the univariate ring in full plus the surfaces this
+  version adds.
+- `BivariatePolynomial<F>` / `WeightedTerm` (`poly::bivariate`): the dense
+  `Q(X,Y) = Σ Q_j(X)·Y^j` object, general-field by construction. The
+  Hasse discrepancy, the `Y` substitutions, and the root predicate
+  (`Y − f(X)` divides, not `Y + f(X)`) run through `binomial::<F>` instead
+  of binary parity rules; ordinary ring operations (`add`, `sub`,
+  `scaled`, `multiply`, `hasse_derivative`) and the warmed bulk ingress
+  `assign_y_coefficients_packed` join the surface. The batched
+  `substitute_y_affine_truncated_fast` runs on the ring's own product
+  engine under `fft`.
+- Sparse multivariate elements (`poly::monomial`, `poly::multivariate`):
+  `MultiIndex<N>`, `Term<F, N>`, `MonomialOrder<N>` (lex, graded lex,
+  weighted), and `SparsePolynomial<F, N>` — canonical sparse storage,
+  scalar term-pair arithmetic, ordered multivariate Hasse evaluation
+  (`evaluate_hasse`, `evaluate_jet_into`), leading terms under any order,
+  and lossless conversions to and from the dense univariate and bivariate
+  forms.
+- `HermitePlan<F>` (`eval::hermite`): the inverse of multiplicity-weighted
+  evaluation. Reconstructs the unique polynomial of degree below the total
+  weight from every point's local jet through a prepared scalar CRT —
+  ring multiplication, exact division, extended gcd, and jet translation;
+  no matrices, no Gaussian elimination. Conflicting duplicate points are
+  rejected at construction; zero weights stay legal.
+- `HermiteError` joins the error surface; `HasseError` now carries this
+  crate's own polynomial and product errors.
+
 - Prime-field correctness across the ring: Karatsuba recombination,
   Euclidean division, series inversion (Newton and naive), subproduct-tree
   leaves, and Hasse derivatives now carry their signs and binomial factors
@@ -37,32 +65,10 @@ All notable changes to this project are documented in this file.
   coverage gaps labeled "no direct competitor found", and the measured
   numbers — lives in `BENCHMARKS.md`.
 
-## 0.0.0 (2026-08-17)
+### Fixed
 
-Initial implementation of the univariate polynomial ring over GF(2^m).
-
-- `Polynomial<F>`: dense monomial-basis coefficients packed in `fgf`'s
-  little-endian element representation, canonical form enforced everywhere,
-  zero polynomial as the empty buffer.
-- Ring operations: add / add-scaled / scale / shift, schoolbook product
-  through `fgf`'s packed kernels, characteristic-two `O(deg)` squaring,
-  Hasse and formal derivatives, affine composition.
-- Product tiers: measured schoolbook↔Karatsuba dispatch and the
-  `butterfly-fft`-composed AFFT batched product behind the `fft` feature.
-- Division: `div_rem` / `exact_divide` / `remainder` / `monic`, `X^k`
-  valuation and exact division, `multiply_mod` / `square_mod` / `pow_mod`,
-  all with reusable-output forms.
-- `gcd`, `gcd_ext` with Bézout cofactors, and `truncated_eea` — the
-  key-equation / Padé primitive equivalent to Berlekamp–Massey.
-- Truncated power series: Newton-doubling `inverse_mod_x_power`, series
-  division, reversal.
-- Root finding: classical Chien search, `gcd(p, X^|F|+X)` equal-degree
-  extraction with deterministic trace splitting, a standalone
-  linearized/affine solver, and Roth–Ruckenstein / Alekhnovich
-  power-series lifting over bivariate Y-rows.
-- Evaluation and interpolation: Horner, subproduct-tree multipoint over
-  arbitrary points, Newton and Lagrange interpolation, `EvaluationDomain`
-  over arbitrary / additive-subspace / affine-coset point sets, and
-  `butterfly-fft` transform composition under the `fft` feature.
-- Measured backend selectors in `cost`; crossovers recorded in
-  `BENCHMARKS.md`.
+- `gcd_ext` and `truncated_eea` updated their Bézout cofactors with a
+  field addition where the Euclidean recurrence requires a subtraction.
+  Correct in characteristic two (where subtraction is addition); over
+  prime fields the cofactor identity `s·a + t·b = g` held only up to
+  sign. Binary results are unchanged.

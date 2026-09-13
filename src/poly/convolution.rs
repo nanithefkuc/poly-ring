@@ -1092,6 +1092,9 @@ fn auto_uses_transform<F: PolynomialField>(
 }
 
 #[cfg(not(feature = "fft"))]
+// The type parameter is unused here but keeps the call sites uniform with
+// the `fft` twin above.
+#[allow(clippy::extra_unused_type_parameters)]
 fn auto_uses_transform<F: PolynomialField>(
     _left_count: usize,
     _right_count: usize,
