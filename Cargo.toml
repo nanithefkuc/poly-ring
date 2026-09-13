@@ -1,0 +1,80 @@
+[package]
+name = "poly-ring"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+publish = false
+repository = "https://github.com/nanithefkuc/poly-ring"
+description = "The polynomial ring: univariate and multivariate arithmetic, Hasse derivatives and jets, evaluation/interpolation, and root finding over fgf fields."
+categories = ["algorithms", "mathematics", "no-std"]
+exclude = ["/.github", "/.plans"]
+
+[features]
+default = ["std", "simd", "fft"]
+std = ["fgf/std", "butterfly-fft?/std"]
+# simd implies std, as in fgf and gfm: fgf's backend cache is a LazyLock, and a
+# simd-without-std combination would compile and silently run scalar.
+simd = ["std", "fgf/simd", "butterfly-fft?/simd"]
+# Structured-domain evaluation/interpolation composes butterfly-fft (which
+# carries its own SIMD `unsafe`). Most L1 consumers want it; a transform-free
+# consumer builds --no-default-features to drop it. Works without `std`:
+# butterfly-fft's core is no_std-capable, and so is everything this feature
+# gates here.
+fft = ["dep:butterfly-fft"]
+# Optional batch/symbol-axis parallelism. Off by default; must not enter
+# default or no-std builds.
+parallel = ["std", "dep:rayon"]
+# poly-ring's own unstable surface, for benchmarks and downstream
+# experimentation. Not a compatibility promise. Distinct from fgf's
+# `internals`, which this crate deliberately does not take.
+internals = []
+
+[dependencies]
+# Field arithmetic and packed-buffer vector kernels, pinned by rev: a
+# floating dependency is a format-break risk when the dependency feeds wire
+# bytes. Swap this rev with the other ecosystem consumers in the same sitting.
+fgf = { git = "https://github.com/nanithefkuc/fgf", rev = "b33b441bcff60da80354bfee6050db4aeab6295c", default-features = false }
+# Additive-FFT transforms for subspace/coset domains, composed (never
+# re-implemented) under the default-on `fft` feature.
+butterfly-fft = { git = "https://github.com/nanithefkuc/butterfly-fft", rev = "7a682acae356ee2ae99596a16b92ba9b8e5c0451", optional = true, default-features = false }
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+ark-ff = "0.6"
+ark-poly = "0.6"
+# Default features pull in plotters + rayon, which this harness does not use.
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+lambdaworks-math = "0.13"
+proptest = { version = "1", default-features = true }
+
+[[bench]]
+name = "poly"
+harness = false
+
+[[bench]]
+name = "competitors"
+harness = false
+
+# The prepared-product panel needs the forced route entry points.
+[[bench]]
+name = "prepared"
+harness = false
+required-features = ["internals"]
+
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+# Release codegen a profiler can attribute: opt-level 3 with full debug info
+# and no symbol stripping. Frame pointers come from RUSTFLAGS in `just
+# profile-perf`, since they are not a Cargo profile key.
+[profile.profiling]
+inherits = "release"
+debug = "full"
+strip = "none"
