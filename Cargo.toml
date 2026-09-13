@@ -37,7 +37,7 @@ internals = []
 fgf = { git = "https://github.com/nanithefkuc/fgf", rev = "68cae1fa058e1900e24b9eb564efeb0189ad0f78", default-features = false }
 # Additive-FFT transforms for subspace/coset domains, composed (never
 # re-implemented) under the default-on `fft` feature.
-butterfly-fft = { git = "https://github.com/nanithefkuc/butterfly-fft", rev = "fc9514bfdc6657ff84abbf20fe0ab89176a783f2", optional = true, default-features = false }
+butterfly-fft = { git = "https://github.com/nanithefkuc/butterfly-fft", rev = "fec2cb8afabf13d79b6bc2f516ee04235363ceae", optional = true, default-features = false }
 rayon = { version = "1", optional = true }
 
 [dev-dependencies]
