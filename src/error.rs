@@ -435,3 +435,69 @@ impl fmt::Display for EvalError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for EvalError {}
+
+/// Failure while constructing or running a Hermite interpolation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HermiteError {
+    /// Checked geometry or allocation failed.
+    Config(ConfigError),
+    /// Supporting polynomial arithmetic failed.
+    Polynomial(PolynomialError),
+    /// A prepared jet translation failed.
+    Hasse(HasseError),
+    /// A buffer length does not match the geometry it was declared for.
+    LengthMismatch {
+        /// Length the geometry requires.
+        expected: usize,
+        /// Length the caller supplied.
+        actual: usize,
+    },
+    /// Two distinct entries carry the same point and both weights are
+    /// positive, so their interpolation constraints conflict.
+    DuplicatePoint {
+        /// Index of the first occurrence.
+        first: usize,
+        /// Index of the second occurrence.
+        second: usize,
+    },
+}
+
+impl From<ConfigError> for HermiteError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(error)
+    }
+}
+
+impl From<PolynomialError> for HermiteError {
+    fn from(error: PolynomialError) -> Self {
+        Self::Polynomial(error)
+    }
+}
+
+impl From<HasseError> for HermiteError {
+    fn from(error: HasseError) -> Self {
+        Self::Hasse(error)
+    }
+}
+
+impl fmt::Display for HermiteError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(error) => error.fmt(formatter),
+            Self::Polynomial(error) => error.fmt(formatter),
+            Self::Hasse(error) => error.fmt(formatter),
+            Self::LengthMismatch { expected, actual } => write!(
+                formatter,
+                "Hermite interpolation expects {expected} jet values, found {actual}"
+            ),
+            Self::DuplicatePoint { first, second } => write!(
+                formatter,
+                "points {first} and {second} repeat with positive multiplicity"
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for HermiteError {}

@@ -114,13 +114,15 @@ pub use cost::{
 };
 pub use derivative::DerivativePlan;
 pub use error::{
-    ConfigError, DomainError, EvalError, HasseError, PolynomialError, ProductError, RootError,
+    ConfigError, DomainError, EvalError, HasseError, HermiteError, PolynomialError, ProductError,
+    RootError,
 };
 pub use eval::{
-    DomainScratch, EvaluationBackend, EvaluationDomain, MODULE_INTERPOLATION_CROSSOVER,
-    MULTIPOINT_EVAL_CROSSOVER, MultiplicityPlan, MultiplicityScratch, MultipointScratch,
-    NewtonBasis, RemainderScratch, RemainderTree, evaluate_multipoint, evaluate_multipoint_into,
-    interpolate_lagrange, interpolate_newton, interpolate_newton_into,
+    DomainScratch, EvaluationBackend, EvaluationDomain, HermitePlan,
+    MODULE_INTERPOLATION_CROSSOVER, MULTIPOINT_EVAL_CROSSOVER, MultiplicityPlan,
+    MultiplicityScratch, MultipointScratch, NewtonBasis, RemainderScratch, RemainderTree,
+    evaluate_multipoint, evaluate_multipoint_into, interpolate_lagrange, interpolate_newton,
+    interpolate_newton_into,
 };
 #[cfg(feature = "fft")]
 pub use eval::{

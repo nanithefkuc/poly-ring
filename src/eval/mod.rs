@@ -1,6 +1,7 @@
 //! Evaluation, interpolation, and the point-set domain abstraction.
 
 mod domain;
+mod hermite;
 mod multiplicity;
 mod multipoint;
 mod newton;
@@ -11,6 +12,7 @@ pub(crate) mod tree;
 
 pub use crate::error::DomainError;
 pub use domain::{DomainScratch, EvaluationBackend, EvaluationDomain};
+pub use hermite::HermitePlan;
 pub use multiplicity::{MultiplicityPlan, MultiplicityScratch};
 pub use multipoint::{
     MULTIPOINT_EVAL_CROSSOVER, MultipointScratch, evaluate_multipoint, evaluate_multipoint_into,
