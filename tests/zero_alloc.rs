@@ -6,7 +6,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fgf::field::{Elem, Field};
-use fgf::{Gf8B, Gf16, Goldilocks, Mersenne31};
+use fgf::{Gf8B, Gf16, Goldilocks, Mersenne31, mersenne31};
 use poly_ring::{
     ChienScratch, DomainScratch, EvaluationDomain, FieldRootScratch, MultiplicityPlan,
     MultipointScratch, Polynomial, RothRuckensteinLimits, RothRuckensteinScratch, truncated_eea,
@@ -447,4 +447,41 @@ fn first_call_from_a_fresh_scratch_is_zero_alloc() {
     }
     run::<Gf8B>();
     run::<Mersenne31>();
+}
+
+/// Warmed bulk row ingress: with the same nonzero row geometry, the
+/// second `assign_y_coefficients_packed` reuses the row vector and every
+/// row buffer, so the counted call allocates nothing. The first, shape-
+/// establishing call is outside the counted region.
+#[test]
+fn packed_row_assignment_reuses_row_buffers() {
+    use poly_ring::BivariatePolynomial;
+
+    let element = Mersenne31::BYTES;
+    let row_bytes = 3 * element;
+    let mut packed = vec![0_u8; 2 * row_bytes];
+    for lane in 0..2 {
+        for coefficient in 0..3 {
+            let offset = lane * row_bytes + coefficient * element;
+            <Mersenne31 as fgf::field::Field>::write(
+                &mut packed[offset..offset + element],
+                m31_from(coefficient as u64 + 1),
+            );
+        }
+    }
+
+    let mut q = BivariatePolynomial::<Mersenne31>::zero();
+    q.assign_y_coefficients_packed([&packed[..row_bytes], &packed[row_bytes..]].into_iter())
+        .expect("warm assignment");
+
+    let allocations = count_allocations(|| {
+        q.assign_y_coefficients_packed([&packed[..row_bytes], &packed[row_bytes..]].into_iter())
+            .expect("counted assignment");
+    });
+    assert_eq!(allocations, 0, "warmed packed assignment must not allocate");
+}
+
+/// Wrap `value` in the M31 element type.
+fn m31_from(value: u64) -> mersenne31::Elem {
+    mersenne31::Elem::from_raw(value as u32)
 }

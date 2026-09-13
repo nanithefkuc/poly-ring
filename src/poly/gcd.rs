@@ -87,10 +87,13 @@ impl<F: FieldKernels> Polynomial<F> {
             let (quotient, remainder) = r_old.div_rem(&r)?;
             r_old = r;
             r = remainder;
-            // Characteristic two: subtraction is addition, so the cofactor
-            // updates are plain sums of scaled terms.
-            let s_next = s_old.add(&quotient.multiply(&s)?)?;
-            let t_next = t_old.add(&quotient.multiply(&t)?)?;
+            // The Euclidean recurrence subtracts: s_next = s_old − q·s and
+            // t_next = t_old − q·t. Scaling by the negated unit subtracts;
+            // in characteristic two that unit is ONE, so binary results are
+            // unchanged.
+            let negative_one = F::Elem::ONE.neg();
+            let s_next = s_old.add_scaled(negative_one, &quotient.multiply(&s)?)?;
+            let t_next = t_old.add_scaled(negative_one, &quotient.multiply(&t)?)?;
             s_old = s;
             s = s_next;
             t_old = t;
@@ -148,8 +151,9 @@ pub fn truncated_eea<F: FieldKernels>(
         let (quotient, remainder) = r_old.div_rem(&r)?;
         r_old = r;
         r = remainder;
-        let u_next = u_old.add(&quotient.multiply(&u)?)?;
-        let v_next = v_old.add(&quotient.multiply(&v)?)?;
+        let negative_one = F::Elem::ONE.neg();
+        let u_next = u_old.add_scaled(negative_one, &quotient.multiply(&u)?)?;
+        let v_next = v_old.add_scaled(negative_one, &quotient.multiply(&v)?)?;
         u_old = u;
         u = u_next;
         v_old = v;
