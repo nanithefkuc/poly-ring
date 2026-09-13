@@ -2,6 +2,7 @@
 
 #[cfg(feature = "fft")]
 mod afft;
+mod bivariate;
 pub mod convolution;
 mod dense;
 mod divide;
@@ -11,6 +12,7 @@ pub(crate) mod monomial;
 mod ring;
 mod series;
 
+pub use bivariate::{BivariatePolynomial, WeightedTerm};
 pub use dense::Polynomial;
 
 #[cfg(feature = "fft")]
