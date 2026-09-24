@@ -11,10 +11,10 @@
 
 use alloc::vec::Vec;
 
-use crate::error::{ConfigError, HermiteError, PolynomialError};
+use crate::error::{ConfigError, HermiteError};
 use crate::jet::JetPlan;
 use crate::poly::{Polynomial, PolynomialField};
-use fgf::field::{Elem, Field};
+use fgf::field::Elem;
 
 /// A prepared Hermite interpolation request: points with multiplicities.
 ///
@@ -310,15 +310,11 @@ fn crt_weights<F: PolynomialField>(
         })
     })?;
     for modulus in moduli {
-        let cofactor = product.exact_divide(modulus)?;
-        let relation = cofactor.gcd_ext(modulus)?;
-        let unit: <F as Field>::Elem = match relation.gcd.degree() {
-            Some(0) => relation.gcd.coefficient(0),
-            _ => return Err(PolynomialError::NonExactDivision.into()),
-        };
-        if unit.is_zero() {
-            return Err(PolynomialError::NonExactDivision.into());
-        }
+        let cofactor = product.divide_exact(modulus)?;
+        let relation = cofactor.extended_gcd(modulus)?;
+        debug_assert_eq!(relation.gcd.degree(), Some(0));
+        let unit = relation.gcd.coefficient(0);
+        debug_assert!(!unit.is_zero());
         let inverse = relation.a_cofactor.scaled(unit.inv());
         let weight = cofactor.multiply(&inverse)?.remainder(product)?;
         weights.push(weight);

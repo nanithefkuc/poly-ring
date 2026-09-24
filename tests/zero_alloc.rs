@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use fgf::field::{Elem, Field};
 use fgf::{Gf8B, Gf16, Goldilocks, Mersenne31, mersenne31};
 use poly_ring::{
-    ChienScratch, DomainScratch, EvaluationDomain, FieldRootScratch, MultiplicityPlan,
-    MultipointScratch, Polynomial, RothRuckensteinLimits, RothRuckensteinScratch, truncated_eea,
+    BinaryRootScratch, ChienScratch, DomainScratch, EvaluationDomain, MultiplicityPlan,
+    MultipointScratch, Polynomial, RemainderTree, RothRuckensteinLimits, RothRuckensteinScratch,
+    truncated_eea,
 };
 
 struct CountingAllocator;
@@ -58,7 +59,7 @@ fn noise<F: fgf::kernel::FieldKernels>(len: usize, seed: u64) -> Polynomial<F> {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let bytes = state.to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect();
     Polynomial::from_coefficients(&coefficients).expect("noise polynomial")
@@ -98,17 +99,17 @@ fn steady_state_paths_do_not_allocate() {
     // call (the same convention gs-engine's decode-allocation tests use).
     let locator = noise::<Gf16>(9, 0x61);
     let mut chien_scratch = ChienScratch::new();
-    let mut field_scratch = FieldRootScratch::new();
+    let mut field_scratch = BinaryRootScratch::new();
     let mut roots = Vec::new();
     for _ in 0..2 {
-        poly_ring::chien_roots_into(&locator, &mut chien_scratch, &mut roots).unwrap();
-        poly_ring::base_field_roots_into(&locator, &mut field_scratch, &mut roots).unwrap();
+        poly_ring::chien_roots_into(&mut roots, &locator, &mut chien_scratch).unwrap();
+        poly_ring::binary_field_roots_into(&mut roots, &locator, &mut field_scratch).unwrap();
     }
     let chien_count = count_allocations(|| {
-        poly_ring::chien_roots_into(&locator, &mut chien_scratch, &mut roots).unwrap();
+        poly_ring::chien_roots_into(&mut roots, &locator, &mut chien_scratch).unwrap();
     });
     let equal_degree_count = count_allocations(|| {
-        poly_ring::base_field_roots_into(&locator, &mut field_scratch, &mut roots).unwrap();
+        poly_ring::binary_field_roots_into(&mut roots, &locator, &mut field_scratch).unwrap();
     });
     assert_eq!(chien_count, 0, "warmed Chien scan must not allocate");
     assert_eq!(
@@ -122,20 +123,20 @@ fn steady_state_paths_do_not_allocate() {
         .collect();
     let mut multipoint = MultipointScratch::new();
     let mut values = Vec::new();
-    // Warm to convergence: the recycled subproduct nodes are drawn from the
-    // pool in reverse construction order, so buffer capacities migrate to
-    // their steady-state slots over the first rounds.
+    // Warm to convergence: whatever route the step count selects, buffer
+    // capacities migrate to their steady-state slots over the first
+    // rounds.
     for _ in 0..3 {
-        poly_ring::evaluate_multipoint_into(&locator, &points, &mut multipoint, &mut values)
+        poly_ring::evaluate_multipoint_into(&mut values, &locator, &points, &mut multipoint)
             .unwrap();
     }
     assert_eq!(
         count_allocations(|| {
-            poly_ring::evaluate_multipoint_into(&locator, &points, &mut multipoint, &mut values)
+            poly_ring::evaluate_multipoint_into(&mut values, &locator, &points, &mut multipoint)
                 .unwrap();
         }),
         0,
-        "warmed subproduct-tree evaluation must not allocate"
+        "warmed multipoint evaluation must not allocate"
     );
 
     // Domain evaluation over a subspace (transform path under `fft`).
@@ -168,22 +169,22 @@ fn steady_state_paths_do_not_allocate() {
     // call.
     for _ in 0..2 {
         poly_ring::roth_ruckenstein_roots_into(
+            &mut lifted,
             &rows,
             3,
             RothRuckensteinLimits::new(100_000, 256),
             &mut lift_scratch,
-            &mut lifted,
         )
         .unwrap();
     }
     assert_eq!(
         count_allocations(|| {
             poly_ring::roth_ruckenstein_roots_into(
+                &mut lifted,
                 &rows,
                 3,
                 RothRuckensteinLimits::new(100_000, 256),
                 &mut lift_scratch,
-                &mut lifted,
             )
             .unwrap();
         }),
@@ -195,28 +196,28 @@ fn steady_state_paths_do_not_allocate() {
 #[cfg(feature = "fft")]
 #[test]
 fn afft_product_scratch_reuse_does_not_allocate() {
-    use poly_ring::{PolynomialProductScratch, ProductStrategy, multiply_batch_truncated};
+    use poly_ring::{PolynomialProductScratch, ProductStrategy, multiply_batch_truncated_into};
 
     let left = noise::<Gf16>(80, 0x81);
     let right = noise::<Gf16>(70, 0x82);
     let mut scratch = PolynomialProductScratch::new();
     let mut output = Vec::new();
-    multiply_batch_truncated(
+    multiply_batch_truncated_into(
+        &mut output,
         &[(&left, &right); 4].map(|(left, right)| (left, right)),
         149,
         ProductStrategy::Afft,
         &mut scratch,
-        &mut output,
     )
     .unwrap();
     assert_eq!(
         count_allocations(|| {
-            multiply_batch_truncated(
+            multiply_batch_truncated_into(
+                &mut output,
                 &[(&left, &right); 4].map(|(left, right)| (left, right)),
                 149,
                 ProductStrategy::Afft,
                 &mut scratch,
-                &mut output,
             )
             .unwrap();
         }),
@@ -257,7 +258,7 @@ fn noise_values<F: fgf::kernel::FieldKernels>(len: usize, seed: u64) -> Vec<F::E
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let bytes = state.to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect()
 }
@@ -288,7 +289,7 @@ where
         for (degree, value) in coefficients.iter().enumerate() {
             for lane in 0..batch {
                 let offset = (degree * batch + lane) * F::BYTES;
-                F::write(&mut packed[offset..offset + F::BYTES], *value);
+                F::encode(&mut packed[offset..offset + F::BYTES], *value);
             }
         }
     };
@@ -339,7 +340,7 @@ where
             // And it agrees with the batch run, row for row.
             for row in 0..weight {
                 assert_eq!(
-                    F::read(&output[row * F::BYTES..][..F::BYTES]),
+                    F::decode(&output[row * F::BYTES..][..F::BYTES]),
                     scalar_output[row]
                 );
             }
@@ -380,7 +381,7 @@ fn assert_first_call_zero_alloc<F>(
         for (degree, value) in coefficients.iter().enumerate() {
             for lane in 0..batch {
                 let offset = (degree * batch + lane) * F::BYTES;
-                F::write(&mut packed[offset..offset + F::BYTES], *value);
+                F::encode(&mut packed[offset..offset + F::BYTES], *value);
             }
         }
     };
@@ -430,7 +431,7 @@ fn assert_first_call_zero_alloc<F>(
         // The first-call lanes agree with each other, row for row (lane 0).
         for row in 0..weight {
             assert_eq!(
-                F::read(&output[row * row_bytes..][..F::BYTES]),
+                F::decode(&output[row * row_bytes..][..F::BYTES]),
                 scalar_output[row]
             );
         }
@@ -449,6 +450,58 @@ fn first_call_from_a_fresh_scratch_is_zero_alloc() {
     run::<Mersenne31>();
 }
 
+/// Warmed lane-parallel Horner evaluation. The multipoint surface routes
+/// above the per-point crossover and below the lane step crossover; the
+/// single-weight multiplicity plan at batch one routes through the lane
+/// evaluator. Both scratches hold their lane buffers from construction, so
+/// the counted calls allocate nothing.
+#[test]
+fn lane_routes_are_steady_state_zero_alloc() {
+    fn check_multipoint<F: fgf::kernel::FieldKernels>() {
+        let points = multiplicity_points::<F>(40);
+        let polynomial = noise::<F>(20, 0x5EED_5000);
+        let mut scratch = MultipointScratch::new();
+        let mut values = Vec::new();
+        poly_ring::evaluate_multipoint_into(&mut values, &polynomial, &points, &mut scratch)
+            .unwrap();
+        assert_eq!(
+            count_allocations(|| {
+                poly_ring::evaluate_multipoint_into(
+                    &mut values,
+                    &polynomial,
+                    &points,
+                    &mut scratch,
+                )
+                .unwrap();
+            }),
+            0,
+            "warmed lane-route evaluation must not allocate"
+        );
+    }
+    check_multipoint::<Gf8B>();
+    check_multipoint::<Goldilocks>();
+
+    fn check_weighted<F: poly_ring::PolynomialField>() {
+        let points = multiplicity_points::<F>(4);
+        let plan = MultiplicityPlan::<F>::new(&points, &[1, 1, 1, 1], 97).expect("plan");
+        let mut scratch = plan.scratch(1).expect("scratch");
+        let coefficients = noise_values::<F>(12, 0x5EED_5100);
+        let mut output = vec![<F as Field>::Elem::ZERO; plan.total_weight()];
+        plan.evaluate_into(&coefficients, &mut scratch, &mut output)
+            .expect("warm-up evaluation");
+        assert_eq!(
+            count_allocations(|| {
+                plan.evaluate_into(&coefficients, &mut scratch, &mut output)
+                    .expect("counted evaluation");
+            }),
+            0,
+            "warmed weighted lane route must not allocate"
+        );
+    }
+    check_weighted::<Gf8B>();
+    check_weighted::<Goldilocks>();
+}
+
 /// Warmed bulk row ingress: with the same nonzero row geometry, the
 /// second `assign_y_coefficients_packed` reuses the row vector and every
 /// row buffer, so the counted call allocates nothing. The first, shape-
@@ -463,7 +516,7 @@ fn packed_row_assignment_reuses_row_buffers() {
     for lane in 0..2 {
         for coefficient in 0..3 {
             let offset = lane * row_bytes + coefficient * element;
-            <Mersenne31 as fgf::field::Field>::write(
+            <Mersenne31 as fgf::field::Field>::encode(
                 &mut packed[offset..offset + element],
                 m31_from(coefficient as u64 + 1),
             );
@@ -479,6 +532,81 @@ fn packed_row_assignment_reuses_row_buffers() {
             .expect("counted assignment");
     });
     assert_eq!(allocations, 0, "warmed packed assignment must not allocate");
+}
+
+/// Warmed remainder-tree descent over short dividends under an oversized
+/// declared capacity: mixed modulus degrees including a constant and two
+/// heavies, batch one and a batched lane count, nothing allocated after the
+/// plan and scratch are built.
+#[test]
+fn short_dividend_descents_do_not_allocate() {
+    fn run<F: poly_ring::PolynomialField>() {
+        let short = noise_values::<F>(5, 0x5EED_D000);
+        let mut heavy_small = noise_values::<F>(33, 0x5EED_D001);
+        heavy_small.push(F::Elem::ONE);
+        let mut heavy_large = noise_values::<F>(40, 0x5EED_D002);
+        heavy_large.push(F::Elem::ONE);
+        let quadratic = [F::Elem::ZERO, F::Elem::ZERO, F::Elem::ONE];
+        let linear = [F::Elem::ZERO, F::Elem::ONE];
+        let constant = [F::Elem::ONE];
+
+        let mut moduli: Vec<Polynomial<F>> = vec![
+            Polynomial::from_coefficients(&heavy_small).expect("modulus"),
+            Polynomial::from_coefficients(&linear).expect("modulus"),
+            Polynomial::from_coefficients(&constant).expect("modulus"),
+            Polynomial::from_coefficients(&quadratic).expect("modulus"),
+            Polynomial::from_coefficients(&heavy_large).expect("modulus"),
+        ];
+        // Many linears push the descent several levels deep, so the short
+        // dividend is shorter than the tree itself, level by level.
+        for index in 0..64 {
+            let point = noise_values::<F>(1, 0x5EED_D100 + index as u64);
+            moduli.push(Polynomial::from_coefficients(&[point[0], F::Elem::ONE]).expect("modulus"));
+        }
+        let capacity = 512_usize;
+        let tree = RemainderTree::new(&moduli, capacity).expect("tree");
+
+        for batch in [1_usize, 8] {
+            let count = short.len();
+            let row_bytes = batch * F::BYTES;
+            let mut scratch = tree.scratch(batch).expect("scratch");
+            let mut packed = vec![0_u8; count * row_bytes];
+            let mut output =
+                vec![0_u8; tree.leaf_offsets().last().copied().unwrap_or(0) * row_bytes];
+            let fill = |packed: &mut [u8], lanes: &[Vec<F::Elem>]| {
+                for (lane, coefficients) in lanes.iter().enumerate() {
+                    for (degree, value) in coefficients.iter().enumerate() {
+                        let offset = (degree * batch + lane) * F::BYTES;
+                        F::encode(&mut packed[offset..offset + F::BYTES], *value);
+                    }
+                }
+            };
+
+            // Warm-up outside the counted region, same shape as the counted
+            // calls. Distinct lane contents per run.
+            let lanes: Vec<Vec<F::Elem>> = (0..batch)
+                .map(|lane| noise_values::<F>(count, 0x5EED_D200 + lane as u64))
+                .collect();
+            fill(&mut packed, &lanes);
+            tree.remainders_into(&packed, count, batch, &mut scratch, &mut output)
+                .expect("warm-up");
+
+            let lanes: Vec<Vec<F::Elem>> = (0..batch)
+                .map(|lane| noise_values::<F>(count, 0x5EED_D300 + lane as u64))
+                .collect();
+            fill(&mut packed, &lanes);
+            let allocations = count_allocations(|| {
+                tree.remainders_into(&packed, count, batch, &mut scratch, &mut output)
+                    .expect("counted run");
+            });
+            assert_eq!(
+                allocations, 0,
+                "warmed short-dividend descent must not allocate"
+            );
+        }
+    }
+    run::<Gf8B>();
+    run::<Mersenne31>();
 }
 
 /// Wrap `value` in the M31 element type.

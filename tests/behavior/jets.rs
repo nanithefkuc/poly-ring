@@ -99,7 +99,7 @@ fn order_two_derivative_is_three_twelve_not_six_twentyfour() {
         for lane in 0..3 {
             let value = m31((degree as u64 + lane as u64 + 1) % 7 + 1);
             let offset = (degree * 3 + lane) * 4;
-            <Mersenne31 as Field>::write(&mut packed[offset..offset + 4], value);
+            <Mersenne31 as Field>::encode(&mut packed[offset..offset + 4], value);
         }
     }
     let mut batch_output = [0_u8; 2 * 3 * 4];
@@ -109,14 +109,14 @@ fn order_two_derivative_is_three_twelve_not_six_twentyfour() {
         let mut scalar = [m31(0); 4];
         for (degree, slot) in scalar.iter_mut().enumerate() {
             let offset = (degree * 3 + lane) * 4;
-            *slot = <Mersenne31 as Field>::read(&packed[offset..offset + 4]);
+            *slot = <Mersenne31 as Field>::decode(&packed[offset..offset + 4]);
         }
         let mut scalar_output = [m31(0); 2];
         plan.apply_into(&scalar, &mut scalar_output).expect("apply");
         for (degree, expected) in scalar_output.iter().enumerate() {
             let offset = (degree * 3 + lane) * 4;
             assert_eq!(
-                <Mersenne31 as Field>::read(&batch_output[offset..offset + 4]),
+                <Mersenne31 as Field>::decode(&batch_output[offset..offset + 4]),
                 *expected
             );
         }
@@ -165,7 +165,7 @@ fn truncated_translation_matches_the_oracle_across_the_recursion() {
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1_442_695_040_888_963_407);
                 let bytes = state.to_le_bytes();
-                F::read(&bytes[..F::BYTES]).add(F::Elem::ZERO)
+                F::decode(&bytes[..F::BYTES]).add(F::Elem::ZERO)
             })
             .collect()
     }

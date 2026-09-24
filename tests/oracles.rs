@@ -19,7 +19,7 @@ pub fn noise<F: FieldKernels>(len: usize, seed: u64) -> Vec<F::Elem> {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let bytes = state.to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect()
 }
@@ -198,7 +198,7 @@ pub fn naive_roots_small_field<F: FieldKernels>(polynomial: &Polynomial<F>) -> V
     let mut roots = Vec::new();
     for key in 0..F::ORDER {
         let bytes = key.to_le_bytes();
-        let element = F::read(&bytes[..F::BYTES]);
+        let element = F::decode(&bytes[..F::BYTES]);
         if naive_evaluate(polynomial, element).is_zero() {
             roots.push(element);
         }

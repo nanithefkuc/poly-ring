@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 
 #[cfg(feature = "fft")]
-use butterfly_fft::core::kernel::ButterflyKernels;
+use butterfly_fft::kernel::ButterflyKernels;
 use fgf::field::Elem;
 use fgf::kernel::FieldKernels;
 
@@ -527,7 +527,7 @@ impl<F: FieldKernels> BivariatePolynomial<F> {
     where
         F: ButterflyKernels,
     {
-        use super::afft::{ProductStrategy, multiply_batch_truncated};
+        use super::afft::{ProductStrategy, multiply_batch_truncated_into};
 
         let Some(y_degree) = self.y_degree() else {
             return Ok(Self::zero());
@@ -594,12 +594,12 @@ impl<F: FieldKernels> BivariatePolynomial<F> {
         }
 
         let mut products = Vec::new();
-        multiply_batch_truncated(
+        multiply_batch_truncated_into(
+            &mut products,
             &pairs,
             coefficient_count,
             ProductStrategy::Auto,
             scratch,
-            &mut products,
         )?;
         let mut output = Vec::new();
         output.try_reserve_exact(power_count).map_err(|_| {
@@ -722,21 +722,15 @@ impl<F: FieldKernels> BivariatePolynomial<F> {
     ///
     /// Returns [`PolynomialError::Config`] wrapping
     /// [`ConfigError::BufferLength`] for a partial field element (context
-    /// `"bivariate packed row"`), [`ConfigError::GeometryOverflow`] when the
-    /// expected row length cannot be represented, and
-    /// [`ConfigError::AllocationFailed`] when the row vector or a row buffer
-    /// cannot be reserved.
+    /// `"bivariate packed row"`) or [`ConfigError::AllocationFailed`] when
+    /// the row vector or a row buffer cannot be reserved.
     pub fn assign_y_coefficients_packed<'a, I>(&mut self, rows: I) -> Result<(), PolynomialError>
     where
         I: ExactSizeIterator<Item = &'a [u8]> + Clone,
     {
         for row in rows.clone() {
-            let Some(expected) = row.len().checked_next_multiple_of(F::BYTES) else {
-                return Err(ConfigError::GeometryOverflow {
-                    context: "bivariate packed row",
-                }
-                .into());
-            };
+            let remainder = row.len() % F::BYTES;
+            let expected = row.len() + (F::BYTES - remainder) % F::BYTES;
             if row.len() != expected {
                 return Err(PolynomialError::Config(ConfigError::BufferLength {
                     context: "bivariate packed row",

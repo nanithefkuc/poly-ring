@@ -2,16 +2,16 @@
 //! agreeing.
 
 #[cfg(feature = "fft")]
-use butterfly_fft::core::kernel::ButterflyKernels;
+use butterfly_fft::kernel::ButterflyKernels;
 use fgf::field::Elem;
 use fgf::kernel::FieldKernels;
-use fgf::{Gf8B, Gf16};
+use fgf::{Gf8B, Gf16, Goldilocks, Mersenne31};
 use poly_ring::{
-    DomainError, DomainScratch, EvaluationDomain, MultipointScratch, NewtonBasis, Polynomial,
-    interpolate_lagrange, interpolate_newton,
+    DomainError, DomainScratch, EvaluationDomain, MULTIPOINT_LANE_STEP_CROSSOVER,
+    MultipointScratch, NewtonBasis, Polynomial, interpolate_lagrange, interpolate_newton,
 };
 
-mod oracles;
+use crate::oracles;
 use oracles::{naive_evaluate, noise, noise_poly};
 
 fn assert_multipoint<F: FieldKernels>() {
@@ -177,7 +177,7 @@ fn distinct_points<F: FieldKernels>(len: usize, seed: u64) -> Vec<F::Elem> {
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         let bytes = state.to_le_bytes();
-        let candidate = F::read(&bytes[..F::BYTES]);
+        let candidate = F::decode(&bytes[..F::BYTES]);
         if !points.contains(&candidate) && (len as u128) <= F::ORDER {
             points.push(candidate);
         }
@@ -246,7 +246,7 @@ fn assert_domain_paths_nofft<F: FieldKernels>() {
 #[cfg(feature = "fft")]
 #[test]
 fn subspace_transform_matches_plain_evaluation() {
-    use butterfly_fft::core::transform::TransformPlan;
+    use butterfly_fft::transform::TransformPlan;
     use poly_ring::{TransformScratch, evaluate_subspace};
 
     for log_size in [2_u32, 4, 6] {
@@ -276,11 +276,84 @@ fn multipoint_scratch_reuse_is_exact() {
     let mut values = Vec::new();
     let polynomial = noise_poly::<Gf8B>(30, 0x3C00);
     let points = distinct_points::<Gf8B>(40, 0x3C10);
-    poly_ring::evaluate_multipoint_into(&polynomial, &points, &mut scratch, &mut values)
+    poly_ring::evaluate_multipoint_into(&mut values, &polynomial, &points, &mut scratch)
         .expect("warm-up");
     let warmed = values.clone();
     let other = noise_poly::<Gf8B>(25, 0x3C20);
-    poly_ring::evaluate_multipoint_into(&other, &points, &mut scratch, &mut values).expect("reuse");
+    poly_ring::evaluate_multipoint_into(&mut values, &other, &points, &mut scratch).expect("reuse");
     assert_eq!(values, other.evaluate_many(&points).expect("horner"));
     assert_ne!(values, warmed);
+}
+
+fn assert_lane_route<F: FieldKernels>() {
+    let mut scratch = MultipointScratch::<F>::new();
+    // Point counts on both sides of the per-point crossover: above
+    // `MULTIPOINT_EVAL_CROSSOVER` the lane-parallel Horner route takes the
+    // request at every step count the suite can build.
+    for len in [1, 15, 16, 17, 33, 40] {
+        for coefficient_count in [1, 3, len + 5] {
+            let polynomial = noise_poly::<F>(coefficient_count, 0x3D00 + len as u64);
+            let points: Vec<F::Elem> = distinct_points::<F>(len, 0x3D10 + len as u64);
+            let mut values = Vec::new();
+            poly_ring::evaluate_multipoint_into(&mut values, &polynomial, &points, &mut scratch)
+                .expect("multipoint");
+            assert_eq!(values.len(), points.len());
+            assert_eq!(values, polynomial.evaluate_many(&points).expect("horner"));
+            for (point, value) in points.iter().zip(&values) {
+                assert_eq!(*value, naive_evaluate(&polynomial, *point));
+            }
+        }
+    }
+
+    // The zero polynomial evaluates to zero everywhere; a single
+    // coefficient evaluates to that coefficient at every point.
+    let points = distinct_points::<F>(24, 0x3D40);
+    for coefficient_count in [0, 1] {
+        let polynomial = noise_poly::<F>(coefficient_count, 0x3D50);
+        let mut values = Vec::new();
+        poly_ring::evaluate_multipoint_into(&mut values, &polynomial, &points, &mut scratch)
+            .expect("degenerate polynomial");
+        assert_eq!(values.len(), points.len());
+        for (point, value) in points.iter().zip(&values) {
+            assert_eq!(*value, naive_evaluate(&polynomial, *point));
+        }
+    }
+
+    // Repeated points evaluate independently of their position.
+    let mut repeated = distinct_points::<F>(20, 0x3D60);
+    repeated[7] = repeated[0];
+    repeated[13] = repeated[3];
+    let polynomial = noise_poly::<F>(9, 0x3D70);
+    let mut values = Vec::new();
+    poly_ring::evaluate_multipoint_into(&mut values, &polynomial, &repeated, &mut scratch)
+        .expect("repeated points");
+    assert_eq!(values, polynomial.evaluate_many(&repeated).expect("horner"));
+    for (point, value) in repeated.iter().zip(&values) {
+        assert_eq!(*value, naive_evaluate(&polynomial, *point));
+    }
+}
+
+#[test]
+fn lane_route_matches_horner_across_fields() {
+    assert_lane_route::<Gf8B>();
+    assert_lane_route::<Goldilocks>();
+    assert_lane_route::<Mersenne31>();
+}
+
+/// Above the lane step crossover the request routes back to the subproduct
+/// tree; the tree route still agrees with the scalar oracle there.
+#[test]
+fn tree_route_agrees_above_lane_step_crossover() {
+    fn assert_tree_route<F: FieldKernels>() {
+        let coefficient_count = MULTIPOINT_LANE_STEP_CROSSOVER / 40 + 1;
+        let points = distinct_points::<F>(40, 0x3D80);
+        let polynomial = noise_poly::<F>(coefficient_count, 0x3D90);
+        assert!(points.len() * coefficient_count > MULTIPOINT_LANE_STEP_CROSSOVER);
+        let values = poly_ring::evaluate_multipoint(&polynomial, &points).expect("tree route");
+        for (point, value) in points.iter().zip(&values) {
+            assert_eq!(*value, naive_evaluate(&polynomial, *point));
+        }
+    }
+    assert_tree_route::<Gf8B>();
+    assert_tree_route::<Goldilocks>();
 }

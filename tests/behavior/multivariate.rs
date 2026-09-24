@@ -104,7 +104,7 @@ fn zero_arity_is_the_constant_ring() {
     let index = MultiIndex::<0>::new([]);
     assert_eq!(index.total_degree().expect("degree"), 0);
     let summed = index.checked_add(&index).expect("add");
-    assert_eq!(summed.exponents(), &[]);
+    assert_eq!(summed.exponents(), &[] as &[usize; 0]);
 
     let constant: SparsePolynomial<Mersenne31, 0> =
         SparsePolynomial::from_terms(vec![term::<Mersenne31, 0>([], m31(9))]);

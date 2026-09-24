@@ -9,10 +9,10 @@
 use alloc::vec::Vec;
 
 use butterfly_fft::basis::{
-    conversion_scratch_elements, monomial_to_novel_bytes, novel_to_monomial_bytes,
+    conversion_scratch_elements, monomial_to_novel_bytes_scratch, novel_to_monomial_bytes_scratch,
 };
-use butterfly_fft::core::kernel::ButterflyKernels;
-use butterfly_fft::core::transform::TransformPlan;
+use butterfly_fft::kernel::ButterflyKernels;
+use butterfly_fft::transform::TransformPlan;
 use fgf::field::Elem as _;
 use fgf::ops;
 
@@ -121,20 +121,20 @@ impl<F: ButterflyKernels> core::fmt::Debug for PolynomialProductScratch<F> {
 ///
 /// Returns [`ProductError`] when storage geometry fails, the transform plan
 /// cannot be built, or a conversion buffer has inconsistent geometry.
-pub fn multiply_batch_truncated<F: ButterflyKernels>(
+pub fn multiply_batch_truncated_into<F: ButterflyKernels>(
+    output: &mut Vec<Polynomial<F>>,
     pairs: &[(&Polynomial<F>, &Polynomial<F>)],
     coefficient_count: usize,
     strategy: ProductStrategy,
     scratch: &mut PolynomialProductScratch<F>,
-    output: &mut Vec<Polynomial<F>>,
 ) -> Result<(), ProductError> {
-    multiply_batch_truncated_with(
+    multiply_batch_truncated_indexed_into(
+        output,
         pairs.len(),
         |index| pairs[index],
         coefficient_count,
         strategy,
         scratch,
-        output,
     )
 }
 
@@ -152,13 +152,13 @@ pub fn multiply_batch_truncated<F: ButterflyKernels>(
 // A faithful lift of gs-engine's batched product; splitting it would
 // diverge the port from its tested original.
 #[allow(clippy::too_many_lines)]
-pub fn multiply_batch_truncated_with<'a, F, P>(
+pub fn multiply_batch_truncated_indexed_into<'a, F, P>(
+    output: &mut Vec<Polynomial<F>>,
     pair_count: usize,
     pair: P,
     coefficient_count: usize,
     strategy: ProductStrategy,
     scratch: &mut PolynomialProductScratch<F>,
-    output: &mut Vec<Polynomial<F>>,
 ) -> Result<(), ProductError>
 where
     F: ButterflyKernels,
@@ -337,7 +337,7 @@ pub(crate) fn afft_rows_convolve<F: ButterflyKernels>(
         .ok_or(ConfigError::GeometryOverflow {
             context: "AFFT operand row bytes",
         })?;
-    monomial_to_novel_bytes::<F>(operands, operand_row_bytes, plan, conversion)?;
+    monomial_to_novel_bytes_scratch::<F>(operands, operand_row_bytes, plan, conversion)?;
     plan.forward_bytes(operands, operand_row_bytes)?;
 
     for (operand_row, product_row) in operands
@@ -352,7 +352,7 @@ pub(crate) fn afft_rows_convolve<F: ButterflyKernels>(
         );
     }
     plan.inverse_bytes(products, pair_bytes)?;
-    novel_to_monomial_bytes::<F>(
+    novel_to_monomial_bytes_scratch::<F>(
         products,
         pair_bytes,
         plan,
@@ -453,7 +453,8 @@ pub fn substitute_y_affine_rows_truncated_into<F: ButterflyKernels>(
                     pair_indices.push((source_y, source_y - target_y));
                 }
             }
-            multiply_batch_truncated_with(
+            multiply_batch_truncated_indexed_into(
+                &mut products,
                 pair_indices.len(),
                 |index| {
                     let (source_y, exponent) = pair_indices[index];
@@ -462,7 +463,6 @@ pub fn substitute_y_affine_rows_truncated_into<F: ButterflyKernels>(
                 coefficient_count - shift,
                 ProductStrategy::Auto,
                 scratch,
-                &mut products,
             )?;
             for product in &products {
                 if !product.is_zero() {
@@ -588,7 +588,7 @@ fn write_lane<F: ButterflyKernels>(
 ) {
     for (degree, coefficient) in polynomial.coefficients().enumerate() {
         let offset = degree * row_len + lane_offset;
-        F::write(&mut rows[offset..offset + F::BYTES], coefficient);
+        F::encode(&mut rows[offset..offset + F::BYTES], coefficient);
     }
 }
 

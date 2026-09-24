@@ -15,7 +15,7 @@ fn noise<F: FieldKernels>(len: usize, seed: u64) -> Polynomial<F> {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let bytes = state.to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect();
     Polynomial::from_coefficients(&coefficients).expect("noise polynomial")
@@ -31,7 +31,7 @@ fn poly_from_bytes<F: FieldKernels>(bytes: &[u8], width: usize) -> Polynomial<F>
         .map(|chunk| {
             let mut buffer = [0_u8; 16];
             buffer[..chunk.len()].copy_from_slice(chunk);
-            F::read(&buffer[..width])
+            F::decode(&buffer[..width])
         })
         .collect();
     Polynomial::from_coefficients(&coefficients).expect("polynomial")
@@ -71,7 +71,7 @@ proptest! {
         let a = poly_from_bytes::<Gf16>(&a, 2);
         let b = poly_from_bytes::<Gf16>(&b, 2);
         proptest::prop_assume!(!a.is_zero() && !b.is_zero());
-        let relation = a.gcd_ext(&b).unwrap();
+        let relation = a.extended_gcd(&b).unwrap();
         let identity = relation
             .a_cofactor
             .multiply(&a)
@@ -90,7 +90,7 @@ proptest! {
         let b = poly_from_bytes::<Gf8B>(&b, 1);
         proptest::prop_assume!(!a.is_zero() && !b.is_zero());
         prop_assert_eq!(
-            poly_ring::karatsuba_multiply(&a, &b).unwrap(),
+            poly_ring::internals::karatsuba_multiply(&a, &b).unwrap(),
             a.multiply_truncated(&b, a.coefficient_count() + b.coefficient_count()).unwrap()
         );
     }

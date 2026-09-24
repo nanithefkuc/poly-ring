@@ -13,7 +13,10 @@
 //! is known (`max_coefficients` at the root, the parent's modulus degree
 //! below it), so the reciprocals, the broadcast row buffers, and the
 //! transform plans are all prepared before the first execution and a warmed
-//! `remainders_into` allocates nothing.
+//! `remainders_into` allocates nothing. Execution tracks the live dividend
+//! length inside those bounds — a short dividend descends over its own rows,
+//! never the structural geometry — and a single-lane descent multiplies the
+//! prepared reciprocal and modulus rows in place, with no broadcast copy.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -23,8 +26,7 @@ use fgf::ops;
 use super::tree::{LEAF, TreePool};
 use crate::error::{ConfigError, PolynomialError, ProductError};
 use crate::geometry::checked_product;
-use crate::poly::convolution::{ConvolutionScratch, multiply_rows_into};
-use crate::poly::{Polynomial, PolynomialField};
+use crate::poly::{ConvolutionScratch, Polynomial, PolynomialField, multiply_rows_into};
 
 /// A prepared remainder tree over monic-normalized moduli.
 ///
@@ -35,9 +37,9 @@ use crate::poly::{Polynomial, PolynomialField};
 /// remainder modulo modulus `i`, zero-padded.
 pub struct RemainderTree<F: PolynomialField> {
     pool: TreePool<F>,
-    /// Degree of each original modulus (zero for constants).
-    leaf_degrees: Vec<usize>,
-    /// Prefix sums of `leaf_degrees`, length `moduli.len() + 1`.
+    /// Original modulus index of each positive-degree leaf, in caller order.
+    leaf_originals: Vec<usize>,
+    /// Prefix sums of the moduli's degrees, length `moduli.len() + 1`.
     leaf_offsets: Vec<usize>,
     /// Per tree node: the dividend length bound (rows), zero for unused.
     bounds: Vec<usize>,
@@ -149,6 +151,7 @@ impl<F: PolynomialField> RemainderTree<F> {
         let mut bounds = vec![0_usize; node_count];
         let mut reciprocals = vec![Vec::<u8>::new(); node_count];
         let mut modulus_rows = vec![Vec::<u8>::new(); node_count];
+        let mut depths = vec![0_usize; node_count];
         let mut max_depth = 0_usize;
         if node_count > 0 {
             let root = node_count - 1;
@@ -160,25 +163,22 @@ impl<F: PolynomialField> RemainderTree<F> {
                 &mut bounds,
                 &mut reciprocals,
                 &mut modulus_rows,
+                &mut depths,
                 &mut max_depth,
             )?;
         }
-        let (depths, depth_bounds, max_precision, max_modulus_len, max_bound) =
-            Self::summarize_geometry(
-                pool.nodes(),
-                &bounds,
-                &reciprocals,
-                &modulus_rows,
-                max_coefficients,
-                max_depth,
-            );
+        let (depth_bounds, max_precision, max_modulus_len, max_bound) = Self::summarize_geometry(
+            &bounds,
+            &depths,
+            &reciprocals,
+            &modulus_rows,
+            max_coefficients,
+            max_depth,
+        );
 
         Ok(Self {
             pool,
-            leaf_degrees: moduli
-                .iter()
-                .map(|modulus| modulus.degree().unwrap_or(0))
-                .collect(),
+            leaf_originals: tree_slots,
             leaf_offsets,
             bounds,
             reciprocals,
@@ -194,21 +194,18 @@ impl<F: PolynomialField> RemainderTree<F> {
         })
     }
 
-    /// Depth indices, per-depth slot bounds, and the shared-buffer maxima a
-    /// compatible scratch must match.
+    /// Per-depth slot bounds and the shared-buffer maxima a compatible
+    /// scratch must match.
     fn summarize_geometry(
-        nodes: &[super::tree::ProductNode<F>],
         bounds: &[usize],
+        depths: &[usize],
         reciprocals: &[Vec<u8>],
         modulus_rows: &[Vec<u8>],
         max_coefficients: usize,
         max_depth: usize,
-    ) -> (Vec<usize>, Vec<usize>, usize, usize, usize) {
-        let node_count = nodes.len();
-        let mut depths = vec![0_usize; node_count];
+    ) -> (Vec<usize>, usize, usize, usize) {
         let mut depth_bounds = vec![0_usize; max_depth + 2];
-        for node in 0..node_count {
-            depths[node] = Self::depth_of(nodes, node);
+        for node in 0..bounds.len() {
             let depth = depths[node];
             depth_bounds[depth] = depth_bounds[depth].max(bounds[node]);
             // The child slot at `depth + 1` stages this node's remainder:
@@ -238,13 +235,7 @@ impl<F: PolynomialField> RemainderTree<F> {
             .max()
             .unwrap_or(0)
             .max(max_coefficients);
-        (
-            depths,
-            depth_bounds,
-            max_precision,
-            max_modulus_len,
-            max_bound,
-        )
+        (depth_bounds, max_precision, max_modulus_len, max_bound)
     }
 
     /// Prefix sums of the moduli's degrees: leaf `i`'s remainder occupies
@@ -392,9 +383,6 @@ impl<F: PolynomialField> RemainderTree<F> {
         if self.total_rows == 0 || batch == 0 {
             return Ok(());
         }
-        if self.pool.nodes().is_empty() {
-            return Ok(());
-        }
 
         // Tree-dependent scratch geometry, validated in full before any
         // mutation: equal coefficient/lane capacities do not make a scratch
@@ -414,21 +402,20 @@ impl<F: PolynomialField> RemainderTree<F> {
             }));
         }
 
-        // Stage the dividend into slot 0: coefficient rows, zero-padded to
-        // the root bound.
+        // Stage the live dividend rows into slot 0; the descent reads no
+        // row past `coefficient_count`.
         let root = self.pool.nodes().len() - 1;
-        let root_bound = self.bounds[root].max(coefficient_count);
-        let root_slot_bytes = root_bound * row_bytes;
-        scratch.slots[0][..root_slot_bytes].fill(0);
         scratch.slots[0][..coefficient_count * row_bytes]
             .copy_from_slice(&coefficients[..coefficient_count * row_bytes]);
 
-        self.descend(root, root_bound, batch, scratch, output);
+        self.descend(root, coefficient_count, batch, scratch, output);
         Ok(())
     }
 
     /// One node's reduction and recursion. `slot` holds the dividend,
-    /// `length` live rows; the children's remainders land in `slot + 1`.
+    /// `length` live rows — at most the node's bound; the children's
+    /// remainders land in `slot + 1`, and each child descends over the rows
+    /// its remainder leaves live.
     fn descend(
         &self,
         node: usize,
@@ -448,29 +435,71 @@ impl<F: PolynomialField> RemainderTree<F> {
         // rows, zero-padded.
         let child_slot = depth + 1;
         let child_bytes = modulus_degree * row_bytes;
-
-        if length < modulus_len || precision == 0 {
+        let child_length = if length < modulus_len || precision == 0 {
             // Copy path: the dividend is already shorter than the modulus.
             scratch.slots[child_slot][..child_bytes].fill(0);
             let kept = length.min(modulus_degree) * row_bytes;
             scratch.slots[child_slot][..kept].copy_from_slice(&dividend[..kept]);
+            length.min(modulus_degree)
         } else {
-            // Newton short division, batched over every lane at once.
-            let bound = self.bounds[node];
-            let bound_bytes = bound * row_bytes;
-            // 1. Reverse the dividend with explicit length `length`, padded
-            //    to the node's bound.
-            let reversed = &mut scratch.reversed[..bound_bytes];
-            for degree in 0..length {
-                let source = (length - 1 - degree) * row_bytes;
-                reversed[degree * row_bytes..(degree + 1) * row_bytes]
-                    .copy_from_slice(&dividend[source..source + row_bytes]);
-            }
-            reversed[length * row_bytes..].fill(0);
-            // 2. Broadcast the reciprocal, multiply, truncate to precision.
+            self.reduce_node(node, length, batch, &dividend, scratch);
+            modulus_degree
+        };
+        scratch.slots[depth] = dividend;
+
+        let (left, right, low) = {
+            let entry = &self.pool.nodes()[node];
+            (entry.left, entry.right, entry.low)
+        };
+        if left == LEAF {
+            // Leaf: `low` indexes the positive-degree moduli in caller
+            // order.
+            let original = self.leaf_originals[low];
+            let start = self.leaf_offsets[original] * row_bytes;
+            output[start..start + modulus_degree * row_bytes]
+                .copy_from_slice(&scratch.slots[child_slot][..modulus_degree * row_bytes]);
+            return;
+        }
+        self.descend(left, child_length, batch, scratch, output);
+        self.descend(right, child_length, batch, scratch, output);
+    }
+
+    /// One node's Newton short division: `dividend`'s live `length` rows
+    /// reduced modulo the node's monic modulus, into the child slot.
+    ///
+    /// The live length drives every geometry: rows past `length` are zero
+    /// and never enter a product, and the prepared reciprocal is used to
+    /// the precision the live length asks for.
+    fn reduce_node(
+        &self,
+        node: usize,
+        length: usize,
+        batch: usize,
+        dividend: &[u8],
+        scratch: &mut RemainderScratch<F>,
+    ) {
+        let row_bytes = batch * F::BYTES;
+        let modulus_len = self.modulus_rows[node].len() / F::BYTES;
+        let modulus_degree = modulus_len - 1;
+        let child_slot = self.depths[node] + 1;
+        let child_bytes = modulus_degree * row_bytes;
+        let live_precision = length - modulus_len + 1;
+        debug_assert!(live_precision <= self.reciprocals[node].len() / F::BYTES);
+        // 1. Reverse the live dividend rows.
+        let reversed = &mut scratch.reversed[..length * row_bytes];
+        for degree in 0..length {
+            let source = (length - 1 - degree) * row_bytes;
+            reversed[degree * row_bytes..(degree + 1) * row_bytes]
+                .copy_from_slice(&dividend[source..source + row_bytes]);
+        }
+        // 2. Stage the operand images: at one lane the prepared reciprocal
+        //    and modulus rows match the lane-row layout and are borrowed in
+        //    place; larger batches broadcast them into the scratch row
+        //    buffers.
+        if batch > 1 {
             let reciprocal = &self.reciprocals[node];
-            let broadcast = &mut scratch.reciprocal_broadcast[..precision * row_bytes];
-            for degree in 0..precision {
+            let broadcast = &mut scratch.reciprocal_broadcast[..live_precision * row_bytes];
+            for degree in 0..live_precision {
                 for lane in 0..batch {
                     let source = degree * F::BYTES;
                     let target = degree * row_bytes + lane * F::BYTES;
@@ -478,28 +507,6 @@ impl<F: PolynomialField> RemainderTree<F> {
                         .copy_from_slice(&reciprocal[source..source + F::BYTES]);
                 }
             }
-            let head = &mut scratch.head[..precision * row_bytes];
-            head.fill(0);
-            multiply_rows_into::<F>(
-                reversed,
-                bound,
-                broadcast,
-                precision,
-                batch,
-                precision,
-                &mut scratch.convolution,
-                head,
-            )
-            .expect("prepared reciprocal product geometry");
-            // 3. Reverse the head with explicit length `precision`: the
-            //    quotient, high rows zero where the dividend was short.
-            for degree in 0..precision / 2 {
-                let (low, high) = (degree * row_bytes, (precision - 1 - degree) * row_bytes);
-                for offset in 0..row_bytes {
-                    head.swap(low + offset, high + offset);
-                }
-            }
-            // 4. q·g, truncated to the bound.
             let modulus = &self.modulus_rows[node];
             let modulus_broadcast = &mut scratch.modulus_broadcast[..modulus_len * row_bytes];
             for degree in 0..modulus_len {
@@ -510,79 +517,62 @@ impl<F: PolynomialField> RemainderTree<F> {
                         .copy_from_slice(&modulus[source..source + F::BYTES]);
                 }
             }
-            let product = &mut scratch.product[..bound_bytes];
-            product.fill(0);
-            multiply_rows_into::<F>(
-                head,
-                precision,
-                modulus_broadcast,
-                modulus_len,
-                batch,
-                bound,
-                &mut scratch.convolution,
-                product,
+        }
+        let (reciprocal_rows, modulus_image): (&[u8], &[u8]) = if batch == 1 {
+            (
+                &self.reciprocals[node][..live_precision * F::BYTES],
+                &self.modulus_rows[node],
             )
-            .expect("prepared quotient product geometry");
-            // 5. remainder = dividend − q·g, over the low `m` rows only and
-            //    into the child slot: the dividend buffer must survive
-            //    intact for the sibling subtree.
-            scratch.slots[child_slot][..child_bytes].copy_from_slice(&dividend[..child_bytes]);
-            ops::sub_assign::<F>(
-                &mut scratch.slots[child_slot][..child_bytes],
-                &product[..child_bytes],
-            );
-        }
-        scratch.slots[depth] = dividend;
-
-        let (left, right, low) = {
-            let entry = &self.pool.nodes()[node];
-            (entry.left, entry.right, entry.low)
+        } else {
+            (
+                &scratch.reciprocal_broadcast[..live_precision * row_bytes],
+                &scratch.modulus_broadcast[..modulus_len * row_bytes],
+            )
         };
-        if left == LEAF {
-            // Leaf: `low` is this leaf's position among the positive-degree
-            // moduli, which preserve caller order — the original index is
-            // the `low`-th modulus with positive degree.
-            let original = Self::original_index(&self.leaf_degrees, low);
-            let start = self.leaf_offsets[original] * row_bytes;
-            output[start..start + modulus_degree * row_bytes]
-                .copy_from_slice(&scratch.slots[child_slot][..modulus_degree * row_bytes]);
-            return;
-        }
-        self.descend(left, modulus_degree, batch, scratch, output);
-        self.descend(right, modulus_degree, batch, scratch, output);
-    }
-
-    /// The original modulus index of the `position`-th positive-degree leaf.
-    fn original_index(leaf_degrees: &[usize], position: usize) -> usize {
-        let mut seen = 0_usize;
-        for (index, &degree) in leaf_degrees.iter().enumerate() {
-            if degree > 0 {
-                if seen == position {
-                    return index;
-                }
-                seen += 1;
+        let head = &mut scratch.head[..live_precision * row_bytes];
+        multiply_rows_into::<F>(
+            head,
+            reversed,
+            length,
+            reciprocal_rows,
+            live_precision,
+            batch,
+            live_precision,
+            &mut scratch.convolution,
+        )
+        .expect("prepared reciprocal product geometry");
+        // 3. Reverse the head over its live rows: the quotient.
+        for degree in 0..live_precision / 2 {
+            let (low, high) = (
+                degree * row_bytes,
+                (live_precision - 1 - degree) * row_bytes,
+            );
+            for offset in 0..row_bytes {
+                head.swap(low + offset, high + offset);
             }
         }
-        unreachable!("leaf position maps to a positive-degree modulus");
-    }
-
-    /// The recursion depth of a node in the shared post-order tree.
-    fn depth_of(nodes: &[super::tree::ProductNode<F>], node: usize) -> usize {
-        // A parent's post-order id is always greater than its children's,
-        // so the search runs upward through the tail of the node slice.
-        let mut depth = 0_usize;
-        let mut current = node;
-        while let Some(parent) = nodes
-            .iter()
-            .enumerate()
-            .skip(current + 1)
-            .find(|(_, entry)| entry.left == current || entry.right == current)
-            .map(|(candidate, _)| candidate)
-        {
-            current = parent;
-            depth += 1;
-        }
-        depth
+        // 4. q·g, truncated to the modulus degree: the remainder reads only
+        //    these low rows.
+        let product = &mut scratch.product[..child_bytes];
+        multiply_rows_into::<F>(
+            product,
+            head,
+            live_precision,
+            modulus_image,
+            modulus_len,
+            batch,
+            modulus_degree,
+            &mut scratch.convolution,
+        )
+        .expect("prepared quotient product geometry");
+        // 5. remainder = dividend − q·g, over the low modulus-degree rows
+        //    only and into the child slot: the dividend buffer must survive
+        //    intact for the sibling subtree.
+        scratch.slots[child_slot][..child_bytes].copy_from_slice(&dividend[..child_bytes]);
+        ops::sub_assign::<F>(
+            &mut scratch.slots[child_slot][..child_bytes],
+            &product[..child_bytes],
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -594,8 +584,10 @@ impl<F: PolynomialField> RemainderTree<F> {
         bounds: &mut [usize],
         reciprocals: &mut Vec<Vec<u8>>,
         modulus_rows: &mut Vec<Vec<u8>>,
+        depths: &mut [usize],
         max_depth: &mut usize,
     ) -> Result<(), ProductError> {
+        depths[node] = depth;
         *max_depth = (*max_depth).max(depth);
         let polynomial = &pool.nodes()[node].polynomial;
         let modulus_len = polynomial.coefficient_count();
@@ -616,7 +608,7 @@ impl<F: PolynomialField> RemainderTree<F> {
                 })?;
             for coefficient in polynomial.coefficients().rev() {
                 let mut encoded = [0_u8; 16];
-                F::write(&mut encoded[..F::BYTES], coefficient);
+                F::encode(&mut encoded[..F::BYTES], coefficient);
                 reversed.extend_from_slice(&encoded[..F::BYTES]);
             }
             let reversed_poly =
@@ -652,6 +644,7 @@ impl<F: PolynomialField> RemainderTree<F> {
                 bounds,
                 reciprocals,
                 modulus_rows,
+                depths,
                 max_depth,
             )?;
             Self::prepare_node(
@@ -662,6 +655,7 @@ impl<F: PolynomialField> RemainderTree<F> {
                 bounds,
                 reciprocals,
                 modulus_rows,
+                depths,
                 max_depth,
             )?;
         }
@@ -673,7 +667,7 @@ impl<F: PolynomialField> core::fmt::Debug for RemainderTree<F> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("RemainderTree")
-            .field("moduli", &self.leaf_degrees.len())
+            .field("moduli", &(self.leaf_offsets.len() - 1))
             .field("total_rows", &self.total_rows)
             .field("max_coefficients", &self.max_coefficients)
             .field("max_depth", &self.max_depth)

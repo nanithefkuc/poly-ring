@@ -2,6 +2,7 @@
 
 mod domain;
 mod hermite;
+mod lane;
 mod multiplicity;
 mod multipoint;
 mod newton;
@@ -10,16 +11,15 @@ mod remainder;
 mod transform;
 pub(crate) mod tree;
 
-pub use crate::error::DomainError;
 pub use domain::{DomainScratch, EvaluationBackend, EvaluationDomain};
 pub use hermite::HermitePlan;
 pub use multiplicity::{MultiplicityPlan, MultiplicityScratch};
 pub use multipoint::{
-    MULTIPOINT_EVAL_CROSSOVER, MultipointScratch, evaluate_multipoint, evaluate_multipoint_into,
-    interpolate_lagrange,
+    MULTIPOINT_EVAL_CROSSOVER, MULTIPOINT_LANE_STEP_CROSSOVER, MultipointScratch,
+    evaluate_multipoint, evaluate_multipoint_into, interpolate_lagrange,
 };
 pub use newton::{
-    MODULE_INTERPOLATION_CROSSOVER, NewtonBasis, interpolate_newton, interpolate_newton_into,
+    NEWTON_INTERPOLATION_CROSSOVER, NewtonBasis, interpolate_newton, interpolate_newton_into,
 };
 pub use remainder::{RemainderScratch, RemainderTree};
 #[cfg(feature = "fft")]

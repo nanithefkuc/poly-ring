@@ -41,7 +41,7 @@ fn noise<F: FieldKernels>(len: usize, seed: u64) -> Vec<F::Elem> {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let bytes = state.to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect()
 }
@@ -62,14 +62,16 @@ fn small_points<F: FieldKernels>(count: usize) -> Vec<F::Elem> {
         .collect()
 }
 
-/// Run the tree over every lane and compare against the oracle per lane.
-fn check_tree<F: poly_ring::PolynomialField>(
+/// Run the tree over every lane and compare against the oracle per lane,
+/// declaring an explicit coefficient capacity for the prepared tree.
+fn check_tree_with_capacity<F: poly_ring::PolynomialField>(
     dividend: &[F::Elem],
     moduli: &[Vec<F::Elem>],
     batch: usize,
+    capacity: usize,
 ) {
     let modulus_polys: Vec<Polynomial<F>> = moduli.iter().map(|m| poly(m)).collect();
-    let tree = RemainderTree::new(&modulus_polys, dividend.len() + 4).expect("tree");
+    let tree = RemainderTree::new(&modulus_polys, capacity).expect("tree");
     let lanes: Vec<Vec<F::Elem>> = (0..batch)
         .map(|lane| {
             let mut coefficients = dividend.to_vec();
@@ -87,7 +89,7 @@ fn check_tree<F: poly_ring::PolynomialField>(
     for (lane, coefficients) in lanes.iter().enumerate() {
         for (degree, value) in coefficients.iter().enumerate() {
             let offset = (degree * batch + lane) * F::BYTES;
-            F::write(&mut packed[offset..offset + F::BYTES], *value);
+            F::encode(&mut packed[offset..offset + F::BYTES], *value);
         }
     }
     let mut output =
@@ -104,13 +106,23 @@ fn check_tree<F: poly_ring::PolynomialField>(
             for (row, want) in expected.iter().enumerate() {
                 let offset = ((start + row) * batch + lane) * F::BYTES;
                 assert_eq!(
-                    F::read(&output[offset..offset + F::BYTES]),
+                    F::decode(&output[offset..offset + F::BYTES]),
                     *want,
                     "modulus {index}, order {row}, lane {lane}"
                 );
             }
         }
     }
+}
+
+/// Run the tree over every lane and compare against the oracle per lane,
+/// with the capacity padded just past the dividend length.
+fn check_tree<F: poly_ring::PolynomialField>(
+    dividend: &[F::Elem],
+    moduli: &[Vec<F::Elem>],
+    batch: usize,
+) {
+    check_tree_with_capacity::<F>(dividend, moduli, batch, dividend.len() + 4)
 }
 
 #[test]
@@ -223,6 +235,61 @@ fn input_lengths_straddle_the_product_crossovers() {
 }
 
 #[test]
+fn short_dividends_reduce_under_oversized_capacity() {
+    fn check<F: poly_ring::PolynomialField>() {
+        let points = small_points::<F>(6);
+        // Two monic heavies whose degrees exceed a short dividend, a
+        // constant that contributes an empty output range, and mixed
+        // smaller degrees.
+        let mut heavy_33 = noise::<F>(33, 0x5EED_C001);
+        heavy_33.push(F::Elem::ONE);
+        let mut heavy_40 = noise::<F>(40, 0x5EED_C002);
+        heavy_40.push(F::Elem::ONE);
+        let constant = vec![points[1].add(F::Elem::ONE)];
+        let quadratic = vec![
+            points[2].neg(),
+            F::Elem::ONE.add(F::Elem::ONE),
+            F::Elem::ONE,
+        ];
+        let mut moduli = vec![
+            heavy_33.clone(),
+            vec![points[3].neg(), F::Elem::ONE],
+            constant,
+            quadratic,
+            heavy_40.clone(),
+            vec![points[4].neg(), F::Elem::ONE],
+        ];
+        // Many linears push the descent several levels deep, so a dividend
+        // of a handful of rows is shorter than the tree itself, level by
+        // level, not only at the root.
+        for index in 0..64 {
+            moduli.push(vec![points[index % points.len()].neg(), F::Elem::ONE]);
+        }
+        let capacity = 512_usize;
+
+        // A handful of coefficients against a root modulus list summing far
+        // beyond it, under a capacity much larger than the dividend.
+        let short = noise::<F>(5, 0x5EED_C004);
+        check_tree_with_capacity::<F>(&short, &moduli, 1, capacity);
+        check_tree_with_capacity::<F>(&short, &moduli, 4, capacity);
+
+        // Dividends exactly at and past one heavy modulus's row count, so
+        // both sides of the copy/divide boundary are exercised. The heavy
+        // degree still exceeds them.
+        let at_rows = noise::<F>(33, 0x5EED_C005);
+        check_tree_with_capacity::<F>(&at_rows, &moduli, 2, capacity);
+        let one_past_rows = noise::<F>(34, 0x5EED_C006);
+        check_tree_with_capacity::<F>(&one_past_rows, &moduli, 2, capacity);
+        let two_past_rows = noise::<F>(35, 0x5EED_C007);
+        check_tree_with_capacity::<F>(&two_past_rows, &moduli, 2, capacity);
+    }
+    check::<Gf8B>();
+    check::<Mersenne31>();
+    check::<Goldilocks>();
+    check::<QuadMersenne31>();
+}
+
+#[test]
 fn noncanonical_prime_lanes_evaluate_their_field_values() {
     const MODULUS: u32 = 0x7FFF_FFFF;
     // A raw `p` lane is the zero coefficient; the tree canonicalizes on
@@ -325,8 +392,8 @@ fn modulus_degree_above_the_capacity_yields_zero_padded_remainder() {
     let mut output = vec![0xAB_u8; 2 * Gf8B::BYTES];
     tree.remainders_into(&[1], 1, 1, &mut scratch, &mut output)
         .expect("short dividend");
-    let first = Gf8B::read(&output[..Gf8B::BYTES]);
-    let second = Gf8B::read(&output[Gf8B::BYTES..2 * Gf8B::BYTES]);
+    let first = Gf8B::decode(&output[..Gf8B::BYTES]);
+    let second = Gf8B::decode(&output[Gf8B::BYTES..2 * Gf8B::BYTES]);
     assert_eq!((first, second), (Gf8B_Elem::from_raw(1), Gf8B_Elem::ZERO));
 }
 
@@ -421,7 +488,7 @@ fn prepared_remainders_are_steady_state_zero_alloc() {
             for (degree, value) in coefficients.iter().enumerate() {
                 for lane in 0..batch {
                     let offset = (degree * batch + lane) * F::BYTES;
-                    F::write(&mut packed[offset..offset + F::BYTES], *value);
+                    F::encode(&mut packed[offset..offset + F::BYTES], *value);
                 }
             }
         };
@@ -463,7 +530,8 @@ fn prepared_remainders_are_steady_state_zero_alloc() {
 #[cfg(feature = "internals")]
 #[test]
 fn forced_transform_products_match_schoolbook() {
-    use poly_ring::{ConvolutionScratch, ProductRoute, multiply_rows_route_into};
+    use poly_ring::ConvolutionScratch;
+    use poly_ring::internals::{ProductRoute, multiply_rows_route_into};
 
     fn check<F: poly_ring::PolynomialField>() {
         for (left_count, right_count) in [(1_usize, 1), (5, 9), (33, 64), (100, 7)] {
@@ -478,6 +546,7 @@ fn forced_transform_products_match_schoolbook() {
             scratch.prepare_transform(full, 1).unwrap();
             let mut transformed = vec![0_u8; full * F::BYTES];
             multiply_rows_route_into::<F>(
+                &mut transformed,
                 &left,
                 left_count,
                 &right,
@@ -486,15 +555,14 @@ fn forced_transform_products_match_schoolbook() {
                 full,
                 ProductRoute::Transform,
                 &mut scratch,
-                &mut transformed,
             )
             .expect("forced transform product");
 
             // Independent schoolbook oracle over scalar elements.
             let expected: Vec<F::Elem> = {
                 let mut product = vec![F::Elem::ZERO; full];
-                for (i, a) in left.chunks(F::BYTES).map(F::read).enumerate() {
-                    for (j, b) in right.chunks(F::BYTES).map(F::read).enumerate() {
+                for (i, a) in left.chunks(F::BYTES).map(F::decode).enumerate() {
+                    for (j, b) in right.chunks(F::BYTES).map(F::decode).enumerate() {
                         product[i + j] = product[i + j].add(a.mul(b));
                     }
                 }
@@ -502,7 +570,7 @@ fn forced_transform_products_match_schoolbook() {
             };
             for (degree, want) in expected.iter().enumerate() {
                 assert_eq!(
-                    F::read(&transformed[degree * F::BYTES..][..F::BYTES]),
+                    F::decode(&transformed[degree * F::BYTES..][..F::BYTES]),
                     *want,
                     "{} coefficient {degree} diverged at {left_count}x{right_count}",
                     F::NAME
@@ -537,7 +605,7 @@ impl<F: poly_ring::PolynomialField> WriteValue for F {
             remaining >>= 1;
         }
         let mut bytes = vec![0_u8; F::BYTES];
-        F::write(&mut bytes, total);
+        F::encode(&mut bytes, total);
         bytes
     }
 }

@@ -3,7 +3,7 @@
 //! The basis `N_i(X) = ∏_{j<i}(X + α_j)` with denominators `N_i(α_i)` is
 //! built incrementally in `O(n²)`, and an interpolant is materialized by
 //! one discrepancy pass in the same cost. This is the small-`n` default
-//! (below [`MODULE_INTERPOLATION_CROSSOVER`] points); the Lagrange
+//! (below [`NEWTON_INTERPOLATION_CROSSOVER`] points); the Lagrange
 //! subproduct-tree path in [`super::multipoint`] takes over above it. The
 //! two agree exactly and share no code.
 
@@ -17,7 +17,7 @@ use crate::poly::Polynomial;
 
 /// Point count at or below which incremental Newton interpolation wins over
 /// the subproduct-tree Lagrange path. Measured; see `BENCHMARKS.md`.
-pub const MODULE_INTERPOLATION_CROSSOVER: usize = 8;
+pub const NEWTON_INTERPOLATION_CROSSOVER: usize = 8;
 
 /// A prepared Newton basis and its denominators.
 ///
@@ -172,7 +172,7 @@ pub fn interpolate_newton<F: FieldKernels>(
     values: &[F::Elem],
 ) -> Result<Polynomial<F>, EvalError> {
     let mut output = Polynomial::zero();
-    interpolate_newton_into(points, values, &mut output)?;
+    interpolate_newton_into(&mut output, points, values)?;
     Ok(output)
 }
 
@@ -184,9 +184,9 @@ pub fn interpolate_newton<F: FieldKernels>(
 /// or an over-capacity support, and [`EvalError::Polynomial`] when an
 /// intermediate buffer cannot be reserved.
 pub fn interpolate_newton_into<F: FieldKernels>(
+    output: &mut Polynomial<F>,
     points: &[F::Elem],
     values: &[F::Elem],
-    output: &mut Polynomial<F>,
 ) -> Result<(), EvalError> {
     let basis = NewtonBasis::new(points)?;
     basis.interpolate_into(values, output)

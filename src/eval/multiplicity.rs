@@ -12,6 +12,8 @@
 
 use alloc::vec::Vec;
 
+use super::lane::{LaneScratch, evaluate_lane_packed_into};
+use super::multipoint::MULTIPOINT_LANE_STEP_CROSSOVER;
 use crate::error::HasseError;
 use crate::eval::{RemainderScratch, RemainderTree};
 use crate::jet::{JetPlan, JetScratch};
@@ -42,6 +44,8 @@ pub struct MultiplicityPlan<F: PolynomialField> {
     jet_slot: Vec<usize>,
     /// The distinct multiplicities, in first-appearance order.
     distinct_multiplicities: Vec<usize>,
+    /// Whether every multiplicity is exactly one — the lane route's shape.
+    all_multiplicities_one: bool,
 }
 
 /// Reusable evaluation workspace.
@@ -68,6 +72,8 @@ pub struct MultiplicityScratch<F: PolynomialField> {
     /// Batch input staging: the canonicalized copy odd-characteristic runs
     /// evaluate through, so raw prime lanes never reach a packed kernel.
     batch_input: Vec<u8>,
+    /// The lane-parallel Horner buffers for the single-weight route.
+    lane: LaneScratch<F>,
 }
 
 impl<F: PolynomialField> MultiplicityPlan<F> {
@@ -90,6 +96,7 @@ impl<F: PolynomialField> MultiplicityPlan<F> {
                 actual: multiplicities.len(),
             });
         }
+        let all_multiplicities_one = multiplicities.iter().all(|&weight| weight == 1);
         let mut offsets = reserved(points.len() + 1, "multiplicity offsets")?;
         let mut total_weight = 0_usize;
         offsets.push(0);
@@ -153,6 +160,7 @@ impl<F: PolynomialField> MultiplicityPlan<F> {
             jets,
             jet_slot,
             distinct_multiplicities,
+            all_multiplicities_one,
         })
     }
 
@@ -240,6 +248,8 @@ impl<F: PolynomialField> MultiplicityPlan<F> {
                 .expect("every distinct multiplicity has a jet");
             jet_scratches.push(jet.scratch(batch_capacity)?);
         }
+        let mut lane = LaneScratch::new();
+        lane.ensure(self.points.len()).map_err(HasseError::from)?;
         Ok(MultiplicityScratch {
             max_batch: batch_capacity,
             max_coefficients: self.max_coefficients,
@@ -281,6 +291,7 @@ impl<F: PolynomialField> MultiplicityPlan<F> {
                     })?,
                 "batch input staging",
             )?,
+            lane,
         })
     }
 
@@ -318,7 +329,7 @@ impl<F: PolynomialField> MultiplicityPlan<F> {
             .chunks_exact_mut(F::BYTES)
             .zip(coefficients)
         {
-            F::write(destination, *value);
+            F::encode(destination, *value);
         }
         let result =
             self.evaluate_batch_into(&input[..input_bytes], count, 1, scratch, &mut staged[..]);
@@ -327,7 +338,7 @@ impl<F: PolynomialField> MultiplicityPlan<F> {
                 .chunks_exact(F::BYTES)
                 .zip(output.iter_mut())
             {
-                *destination = F::read(source);
+                *destination = F::decode(source);
             }
         }
         scratch.scalar_input = input;
@@ -423,8 +434,20 @@ impl<F: PolynomialField> MultiplicityPlan<F> {
             remainders,
             jet_scratches,
             batch_input,
+            lane,
             ..
         } = scratch;
+
+        // A single lane over all-unity weights: output row `offsets[i]` is
+        // exactly `f(a_i)`, so the lane-parallel Horner route fills the
+        // caller's rows directly and the remainder descent is skipped.
+        if batch == 1
+            && self.all_multiplicities_one
+            && self.points.len().saturating_mul(coefficient_count) <= MULTIPOINT_LANE_STEP_CROSSOVER
+        {
+            evaluate_lane_packed_into(output, coefficients, coefficient_count, &self.points, lane)?;
+            return Ok(());
+        }
 
         // One descent carries every lane through every weighted modulus.
         // Odd characteristic runs through a canonicalized copy, so the
@@ -448,8 +471,8 @@ impl<F: PolynomialField> MultiplicityPlan<F> {
             }
             staged[..input_bytes_total].copy_from_slice(coefficients);
             for slot in staged[..input_bytes_total].chunks_exact_mut(F::BYTES) {
-                let value = F::read(slot);
-                F::write(slot, value.add(F::Elem::ZERO));
+                let value = F::decode(slot);
+                F::encode(slot, value.add(F::Elem::ZERO));
             }
             let result = self
                 .tree

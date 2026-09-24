@@ -13,7 +13,7 @@ fn noise_poly<F: fgf::kernel::FieldKernels>(len: usize, seed: u64) -> Polynomial
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let bytes = state.to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect();
     Polynomial::from_coefficients(&coefficients).expect("bench polynomial")
@@ -31,7 +31,7 @@ fn multiply(c: &mut Criterion) {
             })
         });
         group.bench_function(format!("karatsuba/{len}"), |b| {
-            b.iter(|| poly_ring::karatsuba_multiply(&left, &right).expect("product"))
+            b.iter(|| poly_ring::internals::karatsuba_multiply(&left, &right).expect("product"))
         });
     }
     group.finish();
@@ -53,7 +53,7 @@ fn divide_and_gcd(c: &mut Criterion) {
         bencher.iter(|| left.gcd(&right).expect("gcd"))
     });
     group.bench_function("ext/200x150", |bencher| {
-        bencher.iter(|| left.gcd_ext(&right).expect("extended gcd"))
+        bencher.iter(|| left.extended_gcd(&right).expect("extended gcd"))
     });
     group.finish();
 }

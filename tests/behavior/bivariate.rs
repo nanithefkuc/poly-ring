@@ -219,7 +219,7 @@ fn packed_row_ingress_holds_its_contract() {
     // A lane at or beyond the prime folds to its field value: `p + 7`
     // arrives through the ingress and reads back as 7.
     let noncanonical = <Mersenne31 as fgf::field::Field>::ORDER as u32 + 7;
-    <Mersenne31 as fgf::field::Field>::write(
+    <Mersenne31 as fgf::field::Field>::encode(
         &mut small_row[..element],
         mersenne31::Elem::from_raw(noncanonical),
     );
@@ -254,7 +254,7 @@ fn packed_row_ingress_holds_its_contract() {
 #[cfg(feature = "fft")]
 #[test]
 fn affine_substitution_scalar_and_batched_agree_over_binary() {
-    use butterfly_fft::core::kernel::ButterflyKernels;
+    use butterfly_fft::kernel::ButterflyKernels;
     use fgf::Gf16;
 
     fn check<F>()

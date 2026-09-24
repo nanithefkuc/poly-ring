@@ -24,11 +24,9 @@
 //!   group admits no useful radix-two transform.
 //!
 //! `Auto` keeps the measured binary-field AFFT crossovers
-//! ([`crate::cost::select_product`]). The prime-field transform routes have
-//! no measured crossover yet, so `Auto` stays on Karatsuba for them — see
-//! `BENCHMARKS.md` for the panel that will (or will not) justify flipping
-//! that; the forced entry points exist precisely so the comparison is
-//! reproducible.
+//! ([`crate::cost::select_product`]). Goldilocks prepared products select the
+//! NTT by shorter operand and batch width. The other prime-field transform
+//! routes remain explicit through the forced benchmark entry point.
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -45,9 +43,9 @@ use super::karatsuba::{KARATSUBA_CROSSOVER, KaratsubaScratch, karatsuba_into, sc
 #[cfg(feature = "fft")]
 use {
     super::afft::afft_rows_convolve,
-    butterfly_fft::basis::conversion_scratch_elements,
-    butterfly_fft::core::transform::TransformPlan,
     butterfly_fft::ntt::{NttPlan, NttScratch},
+    butterfly_fft::transform::TransformPlan,
+    core::any::TypeId,
     fgf::ops,
     fgf::{Goldilocks, QuadMersenne31},
 };
@@ -80,6 +78,21 @@ pub(crate) enum Route {
     None,
 }
 
+/// Inputs and reusable buffers for one transform-domain convolution.
+#[cfg_attr(not(feature = "fft"), allow(dead_code))]
+pub(crate) struct TransformRows<'a, P> {
+    left: &'a [u8],
+    left_count: usize,
+    right: &'a [u8],
+    right_count: usize,
+    batch: usize,
+    precision: usize,
+    plan: &'a mut P,
+    operands: &'a mut [u8],
+    products: &'a mut [u8],
+    conversion: &'a mut [u8],
+    output: &'a mut [u8],
+}
 /// Per-field convolution workspace and route operations.
 ///
 /// Crate-private supertrait of [`PolynomialField`], mirroring `fgf`'s
@@ -95,6 +108,10 @@ pub(crate) trait ConvolutionDomain: FieldKernels {
     #[cfg_attr(not(feature = "fft"), allow(dead_code))]
     const ROUTE: Route;
 
+    /// Whether prepared `Auto` may take this field's NTT route.
+    #[cfg_attr(not(feature = "fft"), allow(dead_code))]
+    const AUTO_NTT: bool = false;
+
     /// Build the transform plan covering a full product of `full_size`
     /// coefficients over `batch` lanes, or `None` when the size is beyond
     /// this route.
@@ -102,10 +119,9 @@ pub(crate) trait ConvolutionDomain: FieldKernels {
 
     /// Byte sizes of the shared work buffers for one transform size:
     /// `(operands, products, conversion)`.
-    fn work_bytes(
-        transform_size: usize,
-        batch: usize,
-    ) -> Result<(usize, usize, usize), ConfigError>;
+    fn work_bytes(_: usize, _: usize) -> Result<(usize, usize, usize), ConfigError> {
+        Ok((0, 0, 0))
+    }
 
     /// Run the transform product over coefficient-major lane rows.
     ///
@@ -114,20 +130,9 @@ pub(crate) trait ConvolutionDomain: FieldKernels {
     /// [`ConvolutionDomain::work_bytes`] reported for the plan's transform
     /// size. The plan is mutable because NTT routes keep their execution
     /// scratch inside it; its geometry is immutable.
-    #[allow(clippy::too_many_arguments)]
-    fn transform_rows(
-        left: &[u8],
-        left_count: usize,
-        right: &[u8],
-        right_count: usize,
-        batch: usize,
-        precision: usize,
-        plan: &mut Self::Plan,
-        operands: &mut [u8],
-        products: &mut [u8],
-        conversion: &mut [u8],
-        output: &mut [u8],
-    ) -> Result<(), ProductError>;
+    fn transform_rows(_rows: TransformRows<'_, Self::Plan>) -> Result<(), ProductError> {
+        unreachable!("this field has no transform route")
+    }
 }
 
 /// The plan type of a field with no transform route.
@@ -141,8 +146,8 @@ pub(crate) struct NoPlan<F> {
 /// Unstable surface under the `internals` feature: the forced modes exist so
 /// benchmark panels can compare routes reproducibly; `Auto` is the only
 /// mode callers should rely on.
-#[cfg(feature = "internals")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(feature = "internals"), expect(dead_code))]
 pub enum ProductRoute {
     /// The measured per-field default.
     Auto,
@@ -202,28 +207,24 @@ macro_rules! impl_afft_domain {
                 let operands =
                     checked_product("AFFT operand bytes", transform_size, operand_row_bytes)?;
                 let products = checked_product("AFFT product bytes", transform_size, pair_bytes)?;
-                let conversion = checked_product(
-                    "AFFT conversion bytes",
-                    conversion_scratch_elements(transform_size),
-                    operand_row_bytes,
-                )?;
+                let conversion = products;
                 Ok((operands, products, conversion))
             }
 
-            #[allow(clippy::too_many_arguments)]
-    fn transform_rows(
-                left: &[u8],
-                left_count: usize,
-                right: &[u8],
-                right_count: usize,
-                batch: usize,
-                precision: usize,
-                plan: &mut Self::Plan,
-                operands: &mut [u8],
-                products: &mut [u8],
-                conversion: &mut [u8],
-                output: &mut [u8],
-            ) -> Result<(), ProductError> {
+            fn transform_rows(rows: TransformRows<'_, Self::Plan>) -> Result<(), ProductError> {
+                let TransformRows {
+                    left,
+                    left_count,
+                    right,
+                    right_count,
+                    batch,
+                    precision,
+                    plan,
+                    operands,
+                    products,
+                    conversion,
+                    output,
+                } = rows;
                 let pair_bytes = batch * Self::BYTES;
                 operands.fill(0);
                 for (rows, count, lane_offset) in
@@ -266,13 +267,15 @@ impl_afft_domain!(
 
 #[cfg(feature = "fft")]
 macro_rules! impl_ntt_domain {
-    ($($field:ty),+ $(,)?) => {$(
+    ($($field:ty => $auto:expr),+ $(,)?) => {$(
         impl private::Sealed for $field {}
 
         impl ConvolutionDomain for $field {
             type Plan = NttRoute<$field>;
 
             const ROUTE: Route = Route::Ntt;
+
+            const AUTO_NTT: bool = $auto;
 
             fn build_plan(full_size: usize, batch: usize) -> Option<Self::Plan> {
                 // Pad to the FULL product size: padding to a truncation
@@ -292,20 +295,20 @@ macro_rules! impl_ntt_domain {
                 Ok((operands, block, 0))
             }
 
-            #[allow(clippy::too_many_arguments)]
-    fn transform_rows(
-                left: &[u8],
-                left_count: usize,
-                right: &[u8],
-                right_count: usize,
-                batch: usize,
-                precision: usize,
-                plan: &mut Self::Plan,
-                operands: &mut [u8],
-                products: &mut [u8],
-                _conversion: &mut [u8],
-                output: &mut [u8],
-            ) -> Result<(), ProductError> {
+            fn transform_rows(rows: TransformRows<'_, Self::Plan>) -> Result<(), ProductError> {
+                let TransformRows {
+                    left,
+                    left_count,
+                    right,
+                    right_count,
+                    batch,
+                    precision,
+                    plan,
+                    operands,
+                    products,
+                    output,
+                    ..
+                } = rows;
                 ntt_rows_convolve::<Self>(
                     left,
                     left_count,
@@ -324,7 +327,10 @@ macro_rules! impl_ntt_domain {
 }
 
 #[cfg(feature = "fft")]
-impl_ntt_domain!(Goldilocks, QuadMersenne31);
+impl_ntt_domain!(
+    Goldilocks => true,
+    QuadMersenne31 => false,
+);
 
 /// Forward-transform both operand blocks, multiply pointwise, invert.
 ///
@@ -363,11 +369,11 @@ fn ntt_rows_convolve<F: FieldKernels>(
     let scratch = &mut route.scratch;
     route
         .plan
-        .forward_bytes(left_block, row_bytes, scratch)
+        .forward_bytes_scratch(left_block, row_bytes, scratch)
         .map_err(ProductError::from)?;
     route
         .plan
-        .forward_bytes(right_block, row_bytes, scratch)
+        .forward_bytes_scratch(right_block, row_bytes, scratch)
         .map_err(ProductError::from)?;
     for (left_row, right_row, product_row) in left_block
         .chunks_exact(row_bytes)
@@ -379,7 +385,7 @@ fn ntt_rows_convolve<F: FieldKernels>(
     }
     route
         .plan
-        .inverse_bytes(products, row_bytes, scratch)
+        .inverse_bytes_scratch(products, row_bytes, scratch)
         .map_err(ProductError::from)?;
     let out_rows = (left_count + right_count - 1).min(precision);
     let kept = out_rows * row_bytes;
@@ -419,20 +425,20 @@ impl ConvolutionDomain for fgf::Mersenne31 {
         Ok((operands, block, 0))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn transform_rows(
-        left: &[u8],
-        left_count: usize,
-        right: &[u8],
-        right_count: usize,
-        batch: usize,
-        precision: usize,
-        route: &mut Self::Plan,
-        operands: &mut [u8],
-        products: &mut [u8],
-        _conversion: &mut [u8],
-        output: &mut [u8],
-    ) -> Result<(), ProductError> {
+    fn transform_rows(rows: TransformRows<'_, Self::Plan>) -> Result<(), ProductError> {
+        let TransformRows {
+            left,
+            left_count,
+            right,
+            right_count,
+            batch,
+            precision,
+            plan: route,
+            operands,
+            products,
+            output,
+            ..
+        } = rows;
         let wide_row = batch * QuadMersenne31::BYTES;
         let block = route.plan.size() * wide_row;
         let (left_block, right_block) = operands.split_at_mut(block);
@@ -444,11 +450,11 @@ impl ConvolutionDomain for fgf::Mersenne31 {
         let scratch = &mut route.scratch;
         route
             .plan
-            .forward_bytes(left_block, wide_row, scratch)
+            .forward_bytes_scratch(left_block, wide_row, scratch)
             .map_err(ProductError::from)?;
         route
             .plan
-            .forward_bytes(right_block, wide_row, scratch)
+            .forward_bytes_scratch(right_block, wide_row, scratch)
             .map_err(ProductError::from)?;
         for (left_row, right_row, product_row) in left_block
             .chunks_exact(wide_row)
@@ -460,7 +466,7 @@ impl ConvolutionDomain for fgf::Mersenne31 {
         }
         route
             .plan
-            .inverse_bytes(products, wide_row, scratch)
+            .inverse_bytes_scratch(products, wide_row, scratch)
             .map_err(ProductError::from)?;
 
         let full = left_count + right_count - 1;
@@ -478,7 +484,7 @@ impl ConvolutionDomain for fgf::Mersenne31 {
                 debug_assert_eq!(im, 0, "embedded convolution leaves zero imaginary limbs");
                 let destination = &mut output[(degree * batch + lane) * fgf::Mersenne31::BYTES..]
                     [..fgf::Mersenne31::BYTES];
-                fgf::Mersenne31::write(destination, fgf::mersenne31::Elem::from_raw(re));
+                fgf::Mersenne31::encode(destination, fgf::mersenne31::Elem::from_raw(re));
             }
         }
         Ok(())
@@ -498,9 +504,9 @@ where
     for degree in 0..count {
         for lane in 0..batch {
             let source = (degree * batch + lane) * Base::BYTES;
-            let value = Base::read(&rows[source..source + Base::BYTES]).add(Base::Elem::ZERO);
+            let value = Base::decode(&rows[source..source + Base::BYTES]).add(Base::Elem::ZERO);
             let mut encoded = [0_u8; 8];
-            Base::write(&mut encoded[..Base::BYTES], value);
+            Base::encode(&mut encoded[..Base::BYTES], value);
             let target = degree * wide_row + lane * QuadMersenne31::BYTES;
             destination[target..target + Base::BYTES].copy_from_slice(&encoded[..Base::BYTES]);
             // The imaginary limb stays zero from the block fill.
@@ -527,29 +533,6 @@ macro_rules! impl_karatsuba_only_domain {
                 None
             }
 
-            fn work_bytes(
-                _transform_size: usize,
-                _batch: usize,
-            ) -> Result<(usize, usize, usize), ConfigError> {
-                Ok((0, 0, 0))
-            }
-
-            #[allow(clippy::too_many_arguments)]
-    fn transform_rows(
-                _left: &[u8],
-                _left_count: usize,
-                _right: &[u8],
-                _right_count: usize,
-                _batch: usize,
-                _precision: usize,
-                _plan: &mut Self::Plan,
-                _operands: &mut [u8],
-                _products: &mut [u8],
-                _conversion: &mut [u8],
-                _output: &mut [u8],
-            ) -> Result<(), ProductError> {
-                unreachable!("this field has no transform route")
-            }
         }
     )+};
 }
@@ -740,31 +723,6 @@ impl<F: PolynomialField> ConvolutionScratch<F> {
         self.plans.push((transform_size, plan));
         Ok(())
     }
-
-    fn ensure_lane_buffers(&mut self, max_operand: usize, full: usize) -> Result<(), ProductError> {
-        let bytes = |context: &'static str, count: usize| {
-            checked_product(context, count, F::BYTES).map_err(ProductError::Config)
-        };
-        let grow = |buffer: &mut Vec<u8>, context: &'static str, needed: usize| {
-            if buffer.len() < needed {
-                buffer
-                    .try_reserve_exact(needed - buffer.len())
-                    .map_err(|_| ConfigError::AllocationFailed {
-                        context,
-                        elements: needed,
-                        element_size: 1,
-                    })?;
-                buffer.resize(needed, 0);
-            }
-            Result::<(), ProductError>::Ok(())
-        };
-        let operand = bytes("prepared operand lanes", max_operand)?;
-        let product = bytes("prepared product lanes", full)?;
-        grow(&mut self.lane_left, "prepared operand lanes", operand)?;
-        grow(&mut self.lane_right, "prepared operand lanes", operand)?;
-        grow(&mut self.lane_product, "prepared product lanes", product)?;
-        Ok(())
-    }
 }
 
 impl<F: PolynomialField> core::fmt::Debug for ConvolutionScratch<F> {
@@ -823,6 +781,7 @@ fn output_rows(left_count: usize, right_count: usize, precision: usize) -> Optio
 /// unsupported transform size.
 #[allow(clippy::too_many_arguments)]
 pub fn multiply_rows_into<F: PolynomialField>(
+    output: &mut [u8],
     left: &[u8],
     left_count: usize,
     right: &[u8],
@@ -830,7 +789,6 @@ pub fn multiply_rows_into<F: PolynomialField>(
     batch: usize,
     precision: usize,
     scratch: &mut ConvolutionScratch<F>,
-    output: &mut [u8],
 ) -> Result<(), ProductError> {
     multiply_rows_route(
         left,
@@ -857,9 +815,10 @@ pub fn multiply_rows_into<F: PolynomialField>(
 /// Returns [`ProductError`] exactly as [`multiply_rows_into`], plus
 /// [`ConfigError::ScratchTooSmall`] when a forced transform size has no
 /// cached plan or workspace.
-#[cfg(feature = "internals")]
+#[cfg_attr(not(feature = "internals"), expect(dead_code))]
 #[allow(clippy::too_many_arguments)]
 pub fn multiply_rows_route_into<F: PolynomialField>(
+    output: &mut [u8],
     left: &[u8],
     left_count: usize,
     right: &[u8],
@@ -868,7 +827,6 @@ pub fn multiply_rows_route_into<F: PolynomialField>(
     precision: usize,
     route: ProductRoute,
     scratch: &mut ConvolutionScratch<F>,
-    output: &mut [u8],
 ) -> Result<(), ProductError> {
     let selection = match route {
         ProductRoute::Auto => RouteSelection::Auto,
@@ -991,37 +949,23 @@ fn multiply_rows_route<F: PolynomialField>(
         if let Some(index) = plan_slot {
             let (operand_bytes, product_bytes, conversion_bytes) =
                 F::work_bytes(transform_size, batch)?;
-            if scratch.operands.len() < operand_bytes
-                || scratch.products.len() < product_bytes
-                || scratch.conversion.len() < conversion_bytes
-            {
-                return Err(ProductError::Config(ConfigError::ScratchTooSmall {
-                    context: "prepared transform buffers",
-                    required: operand_bytes.max(product_bytes),
-                    available: scratch
-                        .operands
-                        .len()
-                        .max(scratch.products.len())
-                        .max(scratch.conversion.len()),
-                }));
-            }
             let mut plan = scratch.plans.swap_remove(index).1;
             let mut operands = core::mem::take(&mut scratch.operands);
             let mut products = core::mem::take(&mut scratch.products);
             let mut conversion = core::mem::take(&mut scratch.conversion);
-            let result = F::transform_rows(
+            let result = F::transform_rows(TransformRows {
                 left,
                 left_count,
                 right,
                 right_count,
                 batch,
                 precision,
-                &mut plan,
-                &mut operands[..operand_bytes],
-                &mut products[..product_bytes],
-                &mut conversion[..conversion_bytes],
+                plan: &mut plan,
+                operands: &mut operands[..operand_bytes],
+                products: &mut products[..product_bytes],
+                conversion: &mut conversion[..conversion_bytes],
                 output,
-            );
+            });
             scratch.operands = operands;
             scratch.products = products;
             scratch.conversion = conversion;
@@ -1042,7 +986,9 @@ fn multiply_rows_route<F: PolynomialField>(
     // lane by lane through the corrected packed kernels.
     let schoolbook = selection == RouteSelection::Schoolbook
         || left_count.min(right_count) < KARATSUBA_CROSSOVER;
-    scratch.ensure_lane_buffers(left_count.max(right_count), full)?;
+    debug_assert!(left_count * F::BYTES <= scratch.lane_left.len());
+    debug_assert!(right_count * F::BYTES <= scratch.lane_right.len());
+    debug_assert!(full * F::BYTES <= scratch.lane_product.len());
     let full_bytes = full * F::BYTES;
     for lane in 0..batch {
         gather_lane::<F>(left, left_count, batch, lane, &mut scratch.lane_left);
@@ -1068,9 +1014,9 @@ fn multiply_rows_route<F: PolynomialField>(
     Ok(())
 }
 
-/// The measured Auto rule: the binary AFFT crossovers stand; prime-field
-/// transform routes stay on Karatsuba until a benchmark panel justifies a
-/// crossover (see `BENCHMARKS.md`).
+/// The measured Auto rule: binary fields keep their AFFT crossovers;
+/// Goldilocks selects the NTT by shorter operand and batch width. Other
+/// transform routes stay on Karatsuba.
 #[cfg(feature = "fft")]
 fn auto_uses_transform<F: PolynomialField>(
     left_count: usize,
@@ -1078,19 +1024,102 @@ fn auto_uses_transform<F: PolynomialField>(
     batch: usize,
     full: usize,
 ) -> bool {
-    if F::ROUTE != Route::Afft {
-        return false;
+    match F::ROUTE {
+        Route::Afft => {
+            crate::cost::select_product(crate::cost::ProductCostKey {
+                left_coefficients: left_count,
+                right_coefficients: right_count,
+                output_coefficients: full,
+                batch,
+                field_order: F::ORDER,
+                backend: crate::cost::BackendClass::detect::<F>(),
+            }) == crate::cost::ProductBackend::Afft
+        }
+        Route::Ntt => {
+            F::AUTO_NTT
+                && crate::cost::select_ntt_product(
+                    left_count,
+                    right_count,
+                    crate::cost::ntt_prepared_product_crossover(batch),
+                ) == crate::cost::NttProductBackend::Ntt
+        }
+        Route::Embedded | Route::None => false,
     }
-    crate::cost::select_product(crate::cost::ProductCostKey {
-        left_coefficients: left_count,
-        right_coefficients: right_count,
-        output_coefficients: full,
-        batch,
-        field_order: F::ORDER,
-        backend: crate::cost::BackendClass::detect::<F>(),
-    }) == crate::cost::ProductBackend::Afft
 }
 
+/// Return a one-shot automatic NTT product for the public ring API.
+///
+/// The result is present when the field is `Goldilocks`, the shorter operand
+/// reaches [`crate::cost::NTT_ONESHOT_PRODUCT_CROSSOVER`], a transform plan is
+/// available, and the engine accepts the internally generated buffers. Every
+/// other case leaves route selection to the caller.
+pub(crate) fn oneshot_ntt_product<F: FieldKernels>(
+    left: &[u8],
+    left_count: usize,
+    right: &[u8],
+    right_count: usize,
+) -> Option<Vec<u8>> {
+    #[cfg(feature = "fft")]
+    {
+        if TypeId::of::<F>() != TypeId::of::<Goldilocks>() || left_count == 0 || right_count == 0 {
+            return None;
+        }
+        if crate::cost::select_ntt_product(
+            left_count,
+            right_count,
+            crate::cost::NTT_ONESHOT_PRODUCT_CROSSOVER,
+        ) != crate::cost::NttProductBackend::Ntt
+        {
+            return None;
+        }
+        goldilocks_oneshot_convolve(left, left_count, right, right_count)
+    }
+    #[cfg(not(feature = "fft"))]
+    {
+        let _ = (left, left_count, right, right_count);
+        None
+    }
+}
+
+/// Run the Goldilocks NTT engine once over freshly allocated work buffers.
+#[cfg(feature = "fft")]
+fn goldilocks_oneshot_convolve(
+    left: &[u8],
+    left_count: usize,
+    right: &[u8],
+    right_count: usize,
+) -> Option<Vec<u8>> {
+    let full = left_count.checked_add(right_count)?.checked_sub(1)?;
+    let size = full.checked_next_power_of_two()?;
+    let mut route = NttRoute::<Goldilocks>::new(size, Goldilocks::BYTES)?;
+    let (operands_bytes, products_bytes, _) =
+        <Goldilocks as ConvolutionDomain>::work_bytes(size, 1).ok()?;
+    let reserve = |bytes: usize| -> Option<Vec<u8>> {
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(bytes).ok()?;
+        buffer.resize(bytes, 0);
+        Some(buffer)
+    };
+    let mut operands = reserve(operands_bytes)?;
+    let mut products = reserve(products_bytes)?;
+    let output_bytes =
+        checked_product("polynomial product coefficients", full, Goldilocks::BYTES).ok()?;
+    let mut output = reserve(output_bytes)?;
+    ntt_rows_convolve::<Goldilocks>(
+        left,
+        left_count,
+        right,
+        right_count,
+        1,
+        full,
+        &mut route,
+        &mut operands,
+        &mut products,
+        &mut output,
+    )
+    .ok()?;
+    Some(output)
+}
 #[cfg(not(feature = "fft"))]
 // The type parameter is unused here but keeps the call sites uniform with
 // the `fft` twin above.
@@ -1131,5 +1160,41 @@ fn scatter_lane<F: FieldKernels>(
         let source = degree * F::BYTES;
         let destination = (degree * batch + lane) * F::BYTES;
         out[destination..destination + F::BYTES].copy_from_slice(&lanes[source..source + F::BYTES]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transform_free_domain_needs_no_work_buffers() {
+        assert_eq!(
+            <fgf::Gf8D as ConvolutionDomain>::work_bytes(8, 2),
+            Ok((0, 0, 0))
+        );
+        let mut scratch = ConvolutionScratch::<fgf::Gf8D>::new(0, 0, 1).unwrap();
+        scratch.prepare_transform_size(0, 1).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "this field has no transform route")]
+    fn transform_free_domain_rejects_transform_execution() {
+        let mut plan = NoPlan::<fgf::Gf8D>::default();
+        let mut empty = [];
+        <fgf::Gf8D as ConvolutionDomain>::transform_rows(TransformRows {
+            left: &[],
+            left_count: 0,
+            right: &[],
+            right_count: 0,
+            batch: 0,
+            precision: 0,
+            plan: &mut plan,
+            operands: &mut empty,
+            products: &mut [],
+            conversion: &mut [],
+            output: &mut [],
+        })
+        .unwrap();
     }
 }

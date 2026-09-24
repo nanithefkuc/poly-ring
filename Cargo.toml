@@ -2,13 +2,26 @@
 name = "poly-ring"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.93"
 license = "MIT"
 publish = false
 repository = "https://github.com/nanithefkuc/poly-ring"
-description = "The polynomial ring: univariate and multivariate arithmetic, Hasse derivatives and jets, evaluation/interpolation, and root finding over fgf fields."
-categories = ["algorithms", "mathematics", "no-std"]
-exclude = ["/.github", "/.plans"]
+description = "Univariate and multivariate polynomial arithmetic, evaluation, interpolation, and factorization over finite fields."
+readme = "README.md"
+homepage = "https://github.com/nanithefkuc/poly-ring"
+categories = ["mathematics", "algorithms", "no-std"]
+keywords = ["polynomial", "finite-field", "interpolation", "factorization", "simd"]
+# Package the library, tests, benchmarks, examples, and release documents.
+# Cargo also includes the manifest, lockfile, and generated package metadata.
+include = [
+    "/src/**",
+    "/tests/**",
+    "/benches/**",
+    "/examples/**",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
 
 [features]
 default = ["std", "simd", "fft"]
@@ -31,16 +44,21 @@ parallel = ["std", "dep:rayon"]
 internals = []
 
 [dependencies]
-# Field arithmetic and packed-buffer vector kernels, pinned by rev: a
-# floating dependency is a format-break risk when the dependency feeds wire
-# bytes. Swap this rev with the other ecosystem consumers in the same sitting.
-fgf = { git = "https://github.com/nanithefkuc/fgf", rev = "68cae1fa058e1900e24b9eb564efeb0189ad0f78", default-features = false }
+# Field arithmetic and packed-buffer vector kernels, taken from the registry
+# at an exact release: a floating dependency is a format-break risk when the
+# dependency feeds wire bytes. Every consumer resolves this same release so
+# one `fgf` compiles.
+fgf = { version = "=1.2.1", default-features = false }
 # Additive-FFT transforms for subspace/coset domains, composed (never
 # re-implemented) under the default-on `fft` feature.
-butterfly-fft = { git = "https://github.com/nanithefkuc/butterfly-fft", rev = "4003687405de80ae6c2665b4b7197f4657543d9e", optional = true, default-features = false }
-rayon = { version = "1", optional = true }
+butterfly-fft = { version = "=1.0.2", optional = true, default-features = false }
+rayon = { version = "=1.12.0", optional = true }
 
 [dev-dependencies]
+# Tests and benches exercise the unstable internals facade directly; a
+# self dev-dependency turns that feature on for every consumer of the lib
+# without leaking it into the published dependency graph.
+poly-ring = { path = ".", features = ["internals"] }
 ark-ff = "0.6"
 ark-poly = "0.6"
 # Default features pull in plotters + rayon, which this harness does not use.
@@ -53,6 +71,7 @@ winter-math = "=0.13.1"
 [[bench]]
 name = "poly"
 harness = false
+required-features = ["internals"]
 
 [[bench]]
 name = "hasse"

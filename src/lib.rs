@@ -30,20 +30,21 @@
 //!
 //! # Layout
 //!
-//! - [`poly`] — the ring: construction, add/scale/shift/multiply
+//! - [`poly`] — the ring: construction, add/subtract/scale/shift/multiply
 //!   (schoolbook, Karatsuba, AFFT), the dense bivariate object, sparse
 //!   multivariate elements with monomial orders, division, gcd / extended
-//!   gcd / truncated EEA (the key-equation primitive), and truncated
-//!   power-series inversion.
+//!   gcd / truncated EEA (the key-equation primitive), complete finite-field
+//!   factorization, prepared quotient-ring arithmetic, composition, and
+//!   truncated power-series inversion.
 //! - [`derivative`] and [`jet`] — prepared Hasse derivatives of one fixed
 //!   order, and the truncated Taylor translation `f(a + T) mod T^s`.
 //! - [`eval`] — Horner and subproduct-tree evaluation, Newton and Lagrange
 //!   interpolation, multiplicity-weighted multipoint evaluation, Hermite
 //!   reconstruction, [`eval::EvaluationDomain`] backend selection, and the
 //!   `fft`-gated transform composition.
-//! - [`roots`] — Chien search, equal-degree (Cantor–Zassenhaus) base-field
-//!   roots, linearized/affine solving, and Roth–Ruckenstein / Alekhnovich
-//!   power-series root lifting.
+//! - [`roots`] — binary Chien search, factorization-backed base-field roots,
+//!   linearized/affine solving, and Roth–Ruckenstein / Alekhnovich power-series
+//!   root lifting.
 //! - [`cost`] — measured crossover constants and pure backend selectors.
 //!
 //! # Features
@@ -73,7 +74,7 @@
 //! assert!(remainder.is_zero());
 //!
 //! // Bézout cofactors: s·a + t·b == g.
-//! let relation = a.gcd_ext(&b).unwrap();
+//! let relation = a.extended_gcd(&b).unwrap();
 //! assert_eq!(
 //!     relation.a_cofactor.multiply(&a).unwrap()
 //!         .add(&relation.b_cofactor.multiply(&b).unwrap()).unwrap(),
@@ -113,6 +114,8 @@ pub mod cost;
 pub mod derivative;
 pub mod error;
 pub mod eval;
+#[cfg(feature = "internals")]
+pub mod internals;
 pub mod jet;
 pub mod poly;
 pub mod roots;
@@ -122,18 +125,19 @@ mod geometry;
 #[cfg(feature = "fft")]
 pub use cost::product_crossover;
 pub use cost::{
-    BackendClass, BaseRootBackend, BaseRootCostKey, ProductBackend, ProductCostKey, RootBackend,
-    RootCostKey, chien_equal_degree_crossover, select_base_roots, select_product, select_root,
+    BackendClass, BaseRootBackend, BaseRootCostKey, ProductBackend, ProductCostKey,
+    RootLiftingBackend, RootLiftingCostKey, chien_equal_degree_crossover, select_base_roots,
+    select_product, select_root_lifting,
 };
 pub use derivative::DerivativePlan;
 pub use error::{
-    ConfigError, DomainError, EvalError, HasseError, HermiteError, PolynomialError, ProductError,
-    RootError,
+    ConfigError, DomainError, EvalError, FactorizationError, HasseError, HermiteError,
+    PolynomialError, ProductError, RootError,
 };
 pub use eval::{
-    DomainScratch, EvaluationBackend, EvaluationDomain, HermitePlan,
-    MODULE_INTERPOLATION_CROSSOVER, MULTIPOINT_EVAL_CROSSOVER, MultiplicityPlan,
-    MultiplicityScratch, MultipointScratch, NewtonBasis, RemainderScratch, RemainderTree,
+    DomainScratch, EvaluationBackend, EvaluationDomain, HermitePlan, MULTIPOINT_EVAL_CROSSOVER,
+    MULTIPOINT_LANE_STEP_CROSSOVER, MultiplicityPlan, MultiplicityScratch, MultipointScratch,
+    NEWTON_INTERPOLATION_CROSSOVER, NewtonBasis, RemainderScratch, RemainderTree,
     evaluate_multipoint, evaluate_multipoint_into, interpolate_lagrange, interpolate_newton,
     interpolate_newton_into,
 };
@@ -147,25 +151,23 @@ pub use jet::{JetPlan, JetScratch};
 pub use poly::{
     AFFT_BATCH4_CROSSOVER, AFFT_BATCH8_CROSSOVER, AFFT_BATCH16_CROSSOVER, AFFT_PRODUCT_CROSSOVER,
     SCALAR_AFFT_BATCH4_CROSSOVER, SCALAR_AFFT_BATCH8_CROSSOVER, SCALAR_AFFT_BATCH16_CROSSOVER,
-    SCALAR_AFFT_PRODUCT_CROSSOVER, multiply_batch_truncated_with,
-    substitute_y_affine_rows_truncated_into,
+    SCALAR_AFFT_PRODUCT_CROSSOVER,
 };
 pub use poly::{
-    BezoutRelation, BivariatePolynomial, ConvolutionScratch, KARATSUBA_CROSSOVER, MonomialOrder,
-    MultiIndex, Polynomial, PolynomialField, SparsePolynomial, Term, TruncatedEea, WeightedTerm,
-    binomial, binomial_odd, karatsuba_multiply, multiply_rows_into, series_divide, truncated_eea,
+    BezoutRelation, BivariatePolynomial, ConvolutionScratch, DistinctDegreeFactor,
+    IrreducibleFactor, ModulusPlan, ModulusScratch, MonomialOrder, MultiIndex, Polynomial,
+    PolynomialField, SparsePolynomial, SquareFreeFactor, Term, TruncatedEea, WeightedTerm,
+    binomial, multiply_rows_into, series_divide, truncated_eea,
 };
 #[cfg(feature = "fft")]
-pub use poly::{PolynomialProductScratch, ProductStrategy, multiply_batch_truncated};
-#[cfg(feature = "internals")]
-pub use poly::{ProductRoute, multiply_rows_route_into};
+pub use poly::{PolynomialProductScratch, ProductStrategy, multiply_batch_truncated_into};
 #[cfg(feature = "fft")]
 pub use roots::{
     AffineRootFamily, AlekhnovichLimits, AlekhnovichScratch, DEFAULT_ROTH_RUCKENSTEIN_CROSSOVER,
     alekhnovich_roots, alekhnovich_roots_into,
 };
 pub use roots::{
-    BaseFieldRoots, ChienScratch, FieldRootScratch, RothRuckensteinLimits, RothRuckensteinScratch,
-    base_field_roots, base_field_roots_into, chien_roots, chien_roots_into, element_key,
-    linearized_roots, roth_ruckenstein_roots, roth_ruckenstein_roots_into,
+    BaseFieldRoots, BinaryRootScratch, ChienScratch, RothRuckensteinLimits, RothRuckensteinScratch,
+    base_field_roots, binary_field_roots_into, chien_roots, chien_roots_into, linearized_roots,
+    roth_ruckenstein_roots, roth_ruckenstein_roots_into,
 };

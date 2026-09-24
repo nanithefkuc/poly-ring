@@ -6,7 +6,7 @@ use fgf::kernel::FieldKernels;
 use fgf::{FanPaar8, Gf8B, Gf16, Gf32, Goldilocks, Mersenne31, QuadMersenne31};
 use poly_ring::{Polynomial, PolynomialError, truncated_eea};
 
-mod oracles;
+use crate::oracles;
 use oracles::{naive_series_inverse, noise, noise_unit, reference_berlekamp_massey};
 
 fn assert_series_identities<F: FieldKernels>() {

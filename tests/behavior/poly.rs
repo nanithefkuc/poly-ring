@@ -6,9 +6,10 @@ use fgf::{
     FanPaar8, FanPaar16, FanPaar32, FanPaar64, Gf8B, Gf16, Gf32, Gf64, Goldilocks, Mersenne31,
     QuadMersenne31,
 };
-use poly_ring::{Polynomial, PolynomialError, binomial, karatsuba_multiply};
+use poly_ring::internals::karatsuba_multiply;
+use poly_ring::{Polynomial, PolynomialError, binomial};
 
-mod oracles;
+use crate::oracles;
 use oracles::{naive_div_rem, naive_evaluate, naive_gcd_ext, naive_multiply, noise, noise_poly};
 
 fn assert_ring_identities<F: FieldKernels>() {
@@ -65,9 +66,9 @@ fn assert_ring_identities<F: FieldKernels>() {
 
     // Exact division round trip.
     let product = p.multiply(&q).expect("product");
-    assert_eq!(product.exact_divide(&p).expect("exact"), q);
-    assert_eq!(product.exact_divide(&q).expect("exact"), p);
-    assert_eq!(p.exact_divide(&q), Err(PolynomialError::NonExactDivision));
+    assert_eq!(product.divide_exact(&p).expect("exact"), q);
+    assert_eq!(product.divide_exact(&q).expect("exact"), p);
+    assert_eq!(p.divide_exact(&q), Err(PolynomialError::NonExactDivision));
 
     // gcd cases: g | a, g | b, and the fixed extremes.
     let common = Polynomial::from_coefficients(&[scale, F::Elem::ONE]).expect("common factor");
@@ -86,7 +87,7 @@ fn assert_ring_identities<F: FieldKernels>() {
 
     // Extended gcd: Bézout identity via the naive multiply, cofactor bounds,
     // and agreement with the naive extended Euclid.
-    let relation = p.gcd_ext(&q).expect("extended gcd");
+    let relation = p.extended_gcd(&q).expect("extended gcd");
     let identity = naive_multiply(&relation.a_cofactor, &p)
         .add(&naive_multiply(&relation.b_cofactor, &q))
         .expect("bézout");
@@ -162,7 +163,7 @@ fn zero_and_unit_edges() {
     assert_eq!(p.multiply(&zero).expect("product"), zero);
     assert_eq!(one.multiply(&p).expect("product"), p);
     assert_eq!(p.div_rem(&zero), Err(PolynomialError::DivisionByZero));
-    assert_eq!(p.exact_divide(&zero), Err(PolynomialError::DivisionByZero));
+    assert_eq!(p.divide_exact(&zero), Err(PolynomialError::DivisionByZero));
     assert_eq!(p.remainder(&one).expect("remainder"), zero);
     // deg a < deg b: quotient zero, remainder a.
     let small = noise_poly::<Gf16>(2, 0x5EED_0031);
@@ -390,7 +391,7 @@ fn noncanonical_prime_ingress_is_canonicalized() {
     let mut packed = Vec::new();
     for value in [raw_three, one, raw_zero] {
         let mut bytes = [0_u8; 4];
-        Mersenne31::write(&mut bytes, value);
+        Mersenne31::encode(&mut bytes, value);
         packed.extend_from_slice(&bytes);
     }
     let from_packed = Polynomial::<Mersenne31>::from_packed(packed.clone()).expect("aligned");
