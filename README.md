@@ -111,9 +111,9 @@ GF(2) is outside that engine's scope.
 Availability does not imply automatic selection. Goldilocks and
 QuadMersenne31 automatic products use the NTT once the shorter operand
 reaches the measured crossover, and Mersenne31 products use the embedded
-route past its own crossover; the one-shot `Polynomial::multiply` selects
-the NTT for Goldilocks only. Without `fft`, prepared products use
-schoolbook and Karatsuba.
+route past its own crossover; the one-shot `Polynomial::multiply` takes
+the same routes past its own per-field crossovers. Without `fft`,
+prepared products use schoolbook and Karatsuba.
 
 ## The ring's surface
 

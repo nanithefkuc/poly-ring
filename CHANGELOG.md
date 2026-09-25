@@ -90,8 +90,14 @@ All notable changes to this project are documented in this file.
 - QuadMersenne31 prepared products select the number-theoretic transform at
   the shared shorter-operand crossovers, and Mersenne31 products select the
   embedded QuadMersenne31 route past its own measured crossovers; smaller
-  products retain the Karatsuba route. The one-shot `Polynomial::multiply`
-  still selects the NTT for Goldilocks only.
+  products retain the Karatsuba route.
+
+- The one-shot `Polynomial::multiply` selects the number-theoretic
+  transform for Goldilocks, `QuadMersenne31`, and Mersenne31 (embedded in
+  `QuadMersenne31`) at their measured shorter-operand crossovers. The
+  Goldilocks one-shot crossover moves 256 → 512: the earlier value no
+  longer reproduces against the current kernels. Smaller products retain
+  the schoolbook and Karatsuba routes.
 - The manifest declares its package contents with an `include` list —
   sources, tests, benches, examples, and release documents — instead of an
   exclude list, and carries `readme`, `homepage`, `categories`, and

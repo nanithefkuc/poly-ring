@@ -166,9 +166,10 @@ impl<F: FieldKernels> Polynomial<F> {
     }
     /// Return the product, dispatched by operand size.
     ///
-    /// Goldilocks products at the measured crossover use an allocating NTT
-    /// path. Smaller products and fields without that route use schoolbook or
-    /// Karatsuba. Batched products select independently through
+    /// Goldilocks, `QuadMersenne31`, and Mersenne31 (embedded) products at
+    /// their measured crossovers use an allocating NTT path. Smaller
+    /// products and fields without that route use schoolbook or Karatsuba.
+    /// Batched products select independently through
     /// [`crate::poly::multiply_batch_truncated_into`].
     ///
     /// # Errors

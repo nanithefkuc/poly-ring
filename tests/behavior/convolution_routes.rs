@@ -541,3 +541,49 @@ fn goldilocks_multiply_matches_oracle_across_oneshot_crossover() {
         );
     }
 }
+
+/// Public `QuadMersenne31` multiplication agrees with the naive oracle
+/// around the measured one-shot crossover.
+#[cfg(feature = "fft")]
+#[test]
+fn quadmersenne31_multiply_matches_oracle_across_oneshot_crossover() {
+    let crossover = poly_ring::cost::NTT_ONESHOT_QM31_CROSSOVER;
+    let shapes = [
+        (crossover - 1, crossover - 1),
+        (crossover, crossover),
+        (crossover - 1, 4 * crossover),
+        (crossover + 1, 2 * crossover),
+    ];
+    for (n, (left_len, right_len)) in shapes.into_iter().enumerate() {
+        let left = noise_poly::<QuadMersenne31>(left_len, 0xB700 + n as u64);
+        let right = noise_poly::<QuadMersenne31>(right_len, 0xB800 + n as u64);
+        assert_eq!(
+            left.multiply(&right).expect("multiply"),
+            naive_multiply(&left, &right),
+            "shape {n}"
+        );
+    }
+}
+
+/// Public Mersenne31 multiplication agrees with the naive oracle around the
+/// measured one-shot embedded crossover.
+#[cfg(feature = "fft")]
+#[test]
+fn mersenne31_multiply_matches_oracle_across_oneshot_crossover() {
+    let crossover = poly_ring::cost::NTT_ONESHOT_EMBEDDED_CROSSOVER;
+    let shapes = [
+        (crossover - 1, crossover - 1),
+        (crossover, crossover),
+        (crossover - 1, 2 * crossover),
+        (crossover + 1, 2 * crossover),
+    ];
+    for (n, (left_len, right_len)) in shapes.into_iter().enumerate() {
+        let left = noise_poly::<Mersenne31>(left_len, 0xB900 + n as u64);
+        let right = noise_poly::<Mersenne31>(right_len, 0xBA00 + n as u64);
+        assert_eq!(
+            left.multiply(&right).expect("multiply"),
+            naive_multiply(&left, &right),
+            "shape {n}"
+        );
+    }
+}

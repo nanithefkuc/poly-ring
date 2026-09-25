@@ -228,7 +228,15 @@ pub const NTT_PREPARED_EMBEDDED_BATCH16_CROSSOVER: usize = 512;
 
 /// Shorter-operand coefficient crossover for one-shot Goldilocks products.
 /// See `BENCHMARKS.md`.
-pub const NTT_ONESHOT_PRODUCT_CROSSOVER: usize = 256;
+pub const NTT_ONESHOT_PRODUCT_CROSSOVER: usize = 512;
+
+/// Shorter-operand coefficient crossover for one-shot `QuadMersenne31`
+/// products. See `BENCHMARKS.md`.
+pub const NTT_ONESHOT_QM31_CROSSOVER: usize = 1024;
+
+/// Shorter-operand coefficient crossover for one-shot Mersenne31 products
+/// (embedded in `QuadMersenne31`). See `BENCHMARKS.md`.
+pub const NTT_ONESHOT_EMBEDDED_CROSSOVER: usize = 4096;
 
 /// Return the measured prepared Goldilocks and `QuadMersenne31` crossover for
 /// a batch width.
@@ -424,6 +432,22 @@ mod tests {
         assert_eq!(
             ntt_prepared_product_crossover_embedded(16),
             NTT_PREPARED_EMBEDDED_BATCH16_CROSSOVER
+        );
+        assert_eq!(
+            select_ntt_product(
+                NTT_ONESHOT_QM31_CROSSOVER - 1,
+                NTT_ONESHOT_QM31_CROSSOVER * 4,
+                NTT_ONESHOT_QM31_CROSSOVER,
+            ),
+            NttProductBackend::Karatsuba
+        );
+        assert_eq!(
+            select_ntt_product(
+                NTT_ONESHOT_EMBEDDED_CROSSOVER - 1,
+                NTT_ONESHOT_EMBEDDED_CROSSOVER * 4,
+                NTT_ONESHOT_EMBEDDED_CROSSOVER,
+            ),
+            NttProductBackend::Karatsuba
         );
     }
 }

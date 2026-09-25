@@ -393,14 +393,16 @@ crossover from the paired selector campaign.
 | 1024 × 1024 | 433/498 | 170/168 | 252/220 | 1,905/1,777 |
 | 4096 × 4096 | 3,542/3,512 | 741/739 | 1,314/1,165 | 30,371/28,411 |
 
-Automatic Goldilocks routing uses the shorter operand:
+Automatic routing uses the shorter operand:
 
 | Public path | Batch | NTT crossover (coefficients) |
 | --- | ---: | ---: |
 | Prepared batch multiplication | 1–3 | 256 |
 | Prepared batch multiplication | 4–15 | 128 |
 | Prepared batch multiplication | 16 or more | 64 |
-| Allocating `Polynomial::multiply` | 1 | 256 |
+| Allocating `Polynomial::multiply`, Goldilocks | 1 | 512 |
+| Allocating `Polynomial::multiply`, `QuadMersenne31` | 1 | 1024 |
+| Allocating `Polynomial::multiply`, Mersenne31 (embedded) | 1 | 4096 |
 
 - Measured 2026-09-22 with one baseline/candidate session on Lunar Lake;
   Golden Cove was unavailable.
@@ -443,6 +445,14 @@ Mersenne31 selects the embedded QuadMersenne31 route by its own crossovers:
   2026-09-22 selector campaign above, and the Goldilocks arms of the same
   runs serve as the unchanged control. Full record:
   `bench-records/routing-qm31-m31-20260925.md`.
+
+- One-shot crossovers measured 2026-09-25 on Lunar Lake only; Golden Cove
+  was unavailable, so no paired cell exists for this campaign. Sampling
+  and aggregation match the campaigns above. The Goldilocks one-shot
+  crossover moves 256 → 512: the 2026-09-22 value no longer reproduces
+  against the current kernels, and two back-to-back runs agree the NTT
+  loses at 256. Full record:
+  `bench-records/routing-oneshot-20260925.md`.
 
 ### Hasse evaluation over the shared Goldilocks prime
 
