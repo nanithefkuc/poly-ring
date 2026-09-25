@@ -440,19 +440,36 @@ Mersenne31 selects the embedded QuadMersenne31 route by its own crossovers:
 | Prepared batch multiplication | 4–15 | 1024 |
 | Prepared batch multiplication | 16 or more | 512 |
 
-- Measured 2026-09-25 on Lunar Lake only; Golden Cove was unavailable, so no
-  paired cell exists for this campaign. Sampling and aggregation match the
-  2026-09-22 selector campaign above, and the Goldilocks arms of the same
-  runs serve as the unchanged control. Full record:
-  `bench-records/routing-qm31-m31-20260925.md`.
+Decision cells measured on both hosts, medians in microseconds:
 
-- One-shot crossovers measured 2026-09-25 on Lunar Lake only; Golden Cove
-  was unavailable, so no paired cell exists for this campaign. Sampling
-  and aggregation match the campaigns above. The Goldilocks one-shot
-  crossover moves 256 → 512: the 2026-09-22 value no longer reproduces
-  against the current kernels, and two back-to-back runs agree the NTT
-  loses at 256. Full record:
+| Route | Crossover cell | Lunar Lake NTT / Karatsuba (µs) | Golden Cove NTT / Karatsuba (µs) |
+| --- | --- | ---: | ---: |
+| Prepared QM31, batch 1–3 | 256 × 256 | 35.9 / 42.7 | 36.1 / 48.8 |
+| Prepared QM31, batch 4–15 | 128 × 128 | 38.8 / 43.4 | 38.8 / 51.9 |
+| Prepared QM31, batch 16 or more | 64 × 64 | 37.4 / 45.7 | 36.0 / 53.1 |
+| Prepared M31, batch 1–3 | 1024 × 1024 | 153.2 / 170.0 | 157.0 / 191.6 |
+| Prepared M31, batch 4–15 | 1024 × 1024 | 397.4 / 683.4 | 392.2 / 756.7 |
+| Prepared M31, batch 16 or more | 512 × 512 | 445.3 / 701.8 | 405.9 / 782.3 |
+| One-shot Goldilocks | 512 × 512 | 68.4 / 78.5 | 69.2 / 95.2 |
+| One-shot QM31 | 1024 × 1024 | 161.5 / 200.7 | 170.0 / 237.6 |
+| One-shot M31 | 4096 × 4096 | 785.5 / 897.8 | 857.0 / 782.0 |
+
+- Paired 2026-09-25 campaigns on both hosts; sampling and aggregation
+  match the 2026-09-22 selector campaign above. `RAYON_NUM_THREADS=1`;
+  affinity pinned to core 3 on Lunar Lake and core 8 on Golden Cove, both
+  verified through `/proc`. `BackendClass` resolves identically on both
+  hosts. Full records: `bench-records/routing-qm31-m31-20260925.md` and
   `bench-records/routing-oneshot-20260925.md`.
+- Prepared crossovers reproduce on Golden Cove at the same cells. Two
+  Mersenne31 boundary cells read slightly for the transform there against
+  tie-or-Karatsuba on Lunar Lake; the thresholds stand.
+- One-shot crossovers hold on both hosts, except Mersenne31 at 4096: a win
+  on Lunar Lake and a boundary loss on Golden Cove. The threshold stays on
+  the side that keeps the measured win. The Goldilocks one-shot crossover
+  moves 256 → 512: the 2026-09-22 value reproduces on neither host against
+  the current kernels.
+- One-shot runs force the crossover constants to 1 so dispatch takes the
+  NTT path at every size; adopted values are restored afterwards.
 
 ### Hasse evaluation over the shared Goldilocks prime
 
