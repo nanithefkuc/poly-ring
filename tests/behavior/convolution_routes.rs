@@ -65,10 +65,10 @@ fn lane<F: FieldKernels>(
     Polynomial::from_packed(packed).expect("lane polynomial")
 }
 
-/// The Karatsuba-only domain (`Gf8D`) multiplies exactly: the naive scalar
+/// The small binary domain (`Gf8D`) multiplies exactly: the naive scalar
 /// oracle agrees lane by lane.
 #[test]
-fn karatsuba_only_domain_matches_naive_oracle() {
+fn small_binary_domain_matches_naive_oracle() {
     let left = noise_poly::<Gf8D>(9, 0xB101);
     let right = noise_poly::<Gf8D>(7, 0xB102);
     let expected = {
@@ -312,18 +312,18 @@ fn empty_geometries_succeed_without_multiplying() {
     let mut scratch0 = ConvolutionScratch::<Gf8B>::new(4, 4, 0).expect("scratch");
     poly_ring::multiply_rows_into(&mut [], &[], 2, &[], 2, 0, 2, &mut scratch0)
         .expect("batch zero");
-    // Explicitly caching a transform size is idempotent, even on the
-    // Karatsuba-only domain where no plan exists.
+    // Explicitly caching a transform size is idempotent.
     let _ = scratch.prepare_transform(8, batch);
     let _ = scratch.prepare_transform(8, batch);
     let _ = noise::<Gf16>(2, 0xB10D);
 }
 
 /// A `Gf8D` product whose operands both sit at the Karatsuba crossover
-/// still routes through the fallback path — the transform engine has no
-/// seat here — and every lane agrees with the naive scalar oracle.
+/// still routes through the fallback path — `Auto` keeps
+/// schoolbook-or-Karatsuba here — and every lane agrees with the naive
+/// scalar oracle.
 #[test]
-fn above_crossover_karatsuba_only_domain_matches_the_oracle() {
+fn above_crossover_small_domain_matches_the_oracle() {
     let left = noise_poly::<Gf8D>(poly_ring::internals::KARATSUBA_CROSSOVER, 0xB10E);
     let right = noise_poly::<Gf8D>(poly_ring::internals::KARATSUBA_CROSSOVER + 3, 0xB10F);
     let batch = 2;
@@ -397,10 +397,10 @@ fn auto_route_falls_back_past_plan_capacity() {
 fn forced_transform_without_plan_is_an_error() {
     use poly_ring::internals::{ProductRoute, multiply_rows_route_into};
 
-    // `Gf8D` has no transform route: any forced transform size misses the
-    // plan cache, even with ample operand capacity.
-    let left = noise_poly::<Gf8D>(5, 0xB203);
-    let right = noise_poly::<Gf8D>(4, 0xB204);
+    // `Gf8D` caps its additive transform at the field order: a full product
+    // of 289 coefficients needs a size-512 transform, which has no plan.
+    let left = noise_poly::<Gf8D>(150, 0xB203);
+    let right = noise_poly::<Gf8D>(140, 0xB204);
     let batch = 1;
     let mut scratch =
         ConvolutionScratch::<Gf8D>::new(left.coefficient_count(), right.coefficient_count(), batch)

@@ -329,7 +329,7 @@ macro_rules! impl_ntt_domain {
 #[cfg(feature = "fft")]
 impl_ntt_domain!(
     Goldilocks => true,
-    QuadMersenne31 => false,
+    QuadMersenne31 => true,
 );
 
 /// Forward-transform both operand blocks, multiply pointwise, invert.
@@ -537,10 +537,12 @@ macro_rules! impl_karatsuba_only_domain {
     )+};
 }
 
-// Gf8D has no additive-transform kernel seat and no usable multiplicative
-// group, on every build; the prime fields join it only when the `fft`
-// feature is off.
+// Gf8D stays on the schoolbook/Karatsuba route: the additive transform
+// loses everywhere under the field-order ceiling (see
+// `bench-records/routing-gf8d-20260925.md`), so no prepared product route
+// consumes its upstream kernels.
 impl_karatsuba_only_domain!(fgf::Gf8D);
+// Without `fft`, every other field is schoolbook/Karatsuba-only.
 #[cfg(not(feature = "fft"))]
 impl_karatsuba_only_domain!(
     fgf::Gf8B,
@@ -1015,8 +1017,9 @@ fn multiply_rows_route<F: PolynomialField>(
 }
 
 /// The measured Auto rule: binary fields keep their AFFT crossovers;
-/// Goldilocks selects the NTT by shorter operand and batch width. Other
-/// transform routes stay on Karatsuba.
+/// Goldilocks and `QuadMersenne31` select the NTT by shorter operand and batch
+/// width, Mersenne31 selects its embedded route by the embedded crossovers.
+/// Fields without a transform route stay on Karatsuba.
 #[cfg(feature = "fft")]
 fn auto_uses_transform<F: PolynomialField>(
     left_count: usize,
@@ -1043,7 +1046,14 @@ fn auto_uses_transform<F: PolynomialField>(
                     crate::cost::ntt_prepared_product_crossover(batch),
                 ) == crate::cost::NttProductBackend::Ntt
         }
-        Route::Embedded | Route::None => false,
+        Route::Embedded => {
+            crate::cost::select_ntt_product(
+                left_count,
+                right_count,
+                crate::cost::ntt_prepared_product_crossover_embedded(batch),
+            ) == crate::cost::NttProductBackend::Ntt
+        }
+        Route::None => false,
     }
 }
 

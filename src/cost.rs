@@ -202,29 +202,52 @@ pub enum NttProductBackend {
     Ntt,
 }
 
-/// Shorter-operand coefficient crossover for prepared Goldilocks products at
-/// small batch widths. See `BENCHMARKS.md`.
+/// Shorter-operand coefficient crossover for prepared Goldilocks and
+/// `QuadMersenne31` products at small batch widths. See `BENCHMARKS.md`.
 pub const NTT_PREPARED_PRODUCT_CROSSOVER: usize = 256;
 
-/// Shorter-operand coefficient crossover for prepared Goldilocks products at
-/// medium batch widths. See `BENCHMARKS.md`.
+/// Shorter-operand coefficient crossover for prepared Goldilocks and
+/// `QuadMersenne31` products at medium batch widths. See `BENCHMARKS.md`.
 pub const NTT_PREPARED_BATCH4_CROSSOVER: usize = 128;
 
-/// Shorter-operand coefficient crossover for prepared Goldilocks products at
-/// wide batch widths. See `BENCHMARKS.md`.
+/// Shorter-operand coefficient crossover for prepared Goldilocks and
+/// `QuadMersenne31` products at wide batch widths. See `BENCHMARKS.md`.
 pub const NTT_PREPARED_BATCH16_CROSSOVER: usize = 64;
+
+/// Shorter-operand coefficient crossover for prepared Mersenne31 products
+/// (embedded in `QuadMersenne31`) at small batch widths. See `BENCHMARKS.md`.
+pub const NTT_PREPARED_EMBEDDED_CROSSOVER: usize = 1024;
+
+/// Shorter-operand coefficient crossover for prepared Mersenne31 products
+/// (embedded in `QuadMersenne31`) at medium batch widths. See `BENCHMARKS.md`.
+pub const NTT_PREPARED_EMBEDDED_BATCH4_CROSSOVER: usize = 1024;
+
+/// Shorter-operand coefficient crossover for prepared Mersenne31 products
+/// (embedded in `QuadMersenne31`) at wide batch widths. See `BENCHMARKS.md`.
+pub const NTT_PREPARED_EMBEDDED_BATCH16_CROSSOVER: usize = 512;
 
 /// Shorter-operand coefficient crossover for one-shot Goldilocks products.
 /// See `BENCHMARKS.md`.
 pub const NTT_ONESHOT_PRODUCT_CROSSOVER: usize = 256;
 
-/// Return the measured prepared Goldilocks crossover for a batch width.
+/// Return the measured prepared Goldilocks and `QuadMersenne31` crossover for
+/// a batch width.
 #[must_use]
 pub const fn ntt_prepared_product_crossover(batch: usize) -> usize {
     match batch {
         0..=3 => NTT_PREPARED_PRODUCT_CROSSOVER,
         4..=15 => NTT_PREPARED_BATCH4_CROSSOVER,
         _ => NTT_PREPARED_BATCH16_CROSSOVER,
+    }
+}
+
+/// Return the measured prepared Mersenne31 crossover for a batch width.
+#[must_use]
+pub const fn ntt_prepared_product_crossover_embedded(batch: usize) -> usize {
+    match batch {
+        0..=3 => NTT_PREPARED_EMBEDDED_CROSSOVER,
+        4..=15 => NTT_PREPARED_EMBEDDED_BATCH4_CROSSOVER,
+        _ => NTT_PREPARED_EMBEDDED_BATCH16_CROSSOVER,
     }
 }
 
@@ -389,6 +412,18 @@ mod tests {
         assert_eq!(
             ntt_prepared_product_crossover(16),
             NTT_PREPARED_BATCH16_CROSSOVER
+        );
+        assert_eq!(
+            ntt_prepared_product_crossover_embedded(1),
+            NTT_PREPARED_EMBEDDED_CROSSOVER
+        );
+        assert_eq!(
+            ntt_prepared_product_crossover_embedded(4),
+            NTT_PREPARED_EMBEDDED_BATCH4_CROSSOVER
+        );
+        assert_eq!(
+            ntt_prepared_product_crossover_embedded(16),
+            NTT_PREPARED_EMBEDDED_BATCH16_CROSSOVER
         );
     }
 }

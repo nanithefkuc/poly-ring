@@ -3,7 +3,7 @@
 //! steady-state execution.
 //!
 //! Full product sizes 64 through 65536 by powers of two, batch sizes 1, 4,
-//! and 16. Fields: Gf8B, Gf16, Mersenne31, Goldilocks, QuadMersenne31.
+//! and 16. Fields: Gf8B, Gf16, Gf8D, Mersenne31, Goldilocks, QuadMersenne31.
 //! Mathematically unsupported forced transforms are labelled and omitted,
 //! never faked: under `internals`, the forced transform route runs only for
 //! the fields whose multiplicative (or embedded) domain covers the size.
@@ -16,7 +16,7 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use fgf::kernel::FieldKernels;
-use fgf::{Field, Gf8B, Gf16, Goldilocks, Mersenne31, QuadMersenne31};
+use fgf::{Gf8B, Gf8D, Gf16, Goldilocks, Mersenne31, QuadMersenne31};
 use poly_ring::PolynomialField;
 
 #[cfg(feature = "internals")]
@@ -169,6 +169,9 @@ fn prepared(c: &mut Criterion) {
     // Gf8B/Gf16: the additive transform domain is the field itself.
     panel::<Gf8B>(c, "gf8b", 256);
     panel::<Gf16>(c, "gf16", 65_536);
+    // Gf8D: the karatsuba-only baseline panel. No transform arm runs here;
+    // the route was measured and rejected (see the campaign record).
+    panel::<Gf8D>(c, "gf8d", 0);
     // Mersenne31 (embedded), Goldilocks, QuadMersenne31: the multiplicative
     // route covers every measured size (2^32 | p² − 1 shapes hold to 2^20).
     panel::<Mersenne31>(c, "mersenne31", 1 << 20);
@@ -176,11 +179,12 @@ fn prepared(c: &mut Criterion) {
     panel::<QuadMersenne31>(c, "quad-mersenne31", 1 << 20);
 }
 
-/// Goldilocks-only internal tuning group: Auto versus forced Karatsuba and
-/// forced Transform (`internals`) over the tuning geometries. Not a public
-/// record panel — internal A/B evidence for the route selectors.
-fn prepared_tuning_goldilocks(criterion: &mut Criterion) {
-    let mut group = criterion.benchmark_group("prepared_tuning/goldilocks");
+/// Internal tuning groups: Auto versus forced Karatsuba and forced Transform
+/// (`internals`) over equal and asymmetric products. Inputs and scratch stay
+/// outside the timed region, and every route is checked before timing. Not a
+/// public record panel — internal A/B evidence for the route selectors.
+fn prepared_tuning<F: PolynomialField>(criterion: &mut Criterion, name: &str) {
+    let mut group = criterion.benchmark_group(format!("prepared_tuning/{name}"));
 
     let equal: Vec<(usize, usize)> = [64_usize, 96, 128, 160, 192, 256, 384, 512, 768, 1024]
         .into_iter()
@@ -193,11 +197,11 @@ fn prepared_tuning_goldilocks(criterion: &mut Criterion) {
 
     for (left_len, right_len) in geometries {
         for batch in [1_usize, 4, 16] {
-            let left = lanes::<Goldilocks>(left_len, batch, 0x5EED_1000 + left_len as u64);
-            let right = lanes::<Goldilocks>(right_len, batch, 0x5EED_2000 + left_len as u64);
+            let left = lanes::<F>(left_len, batch, 0x5EED_1000 + left_len as u64);
+            let right = lanes::<F>(right_len, batch, 0x5EED_2000 + left_len as u64);
             let full = left_len + right_len - 1;
 
-            let mut auto_output = vec![0_u8; full * batch * Goldilocks::BYTES];
+            let mut auto_output = vec![0_u8; full * batch * F::BYTES];
             #[cfg(feature = "internals")]
             let mut karatsuba_output = auto_output.clone();
             #[cfg(feature = "internals")]
@@ -205,10 +209,10 @@ fn prepared_tuning_goldilocks(criterion: &mut Criterion) {
 
             // Scratch and inputs built outside the timer.
             let mut scratch =
-                ConvolutionScratch::<Goldilocks>::new(left_len, right_len, batch).expect("scratch");
+                ConvolutionScratch::<F>::new(left_len, right_len, batch).expect("scratch");
             scratch.prepare_transform(full, batch).expect("prepare");
 
-            multiply_rows_into::<Goldilocks>(
+            multiply_rows_into::<F>(
                 &mut auto_output,
                 &left,
                 left_len,
@@ -260,7 +264,7 @@ fn prepared_tuning_goldilocks(criterion: &mut Criterion) {
                 &(),
                 |bench, _| {
                     bench.iter(|| {
-                        multiply_rows_into::<Goldilocks>(
+                        multiply_rows_into::<F>(
                             &mut auto_output,
                             &left,
                             left_len,
@@ -322,5 +326,24 @@ fn prepared_tuning_goldilocks(criterion: &mut Criterion) {
     }
     group.finish();
 }
-criterion_group!(benches, prepared, prepared_tuning_goldilocks);
+
+fn prepared_tuning_goldilocks(criterion: &mut Criterion) {
+    prepared_tuning::<Goldilocks>(criterion, "goldilocks");
+}
+
+fn prepared_tuning_quadmersenne31(criterion: &mut Criterion) {
+    prepared_tuning::<QuadMersenne31>(criterion, "quad-mersenne31");
+}
+
+fn prepared_tuning_mersenne31(criterion: &mut Criterion) {
+    prepared_tuning::<Mersenne31>(criterion, "mersenne31");
+}
+
+criterion_group!(
+    benches,
+    prepared,
+    prepared_tuning_goldilocks,
+    prepared_tuning_quadmersenne31,
+    prepared_tuning_mersenne31
+);
 criterion_main!(benches);

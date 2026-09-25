@@ -422,6 +422,28 @@ Automatic Goldilocks routing uses the shorter operand:
   routes over equal and asymmetric geometries. Internal route timings remain
   outside the published record.
 
+QuadMersenne31 shares the prepared selector and its crossovers:
+
+| Public path | Batch | NTT crossover (coefficients) |
+| --- | ---: | ---: |
+| Prepared batch multiplication | 1–3 | 256 |
+| Prepared batch multiplication | 4–15 | 128 |
+| Prepared batch multiplication | 16 or more | 64 |
+
+Mersenne31 selects the embedded QuadMersenne31 route by its own crossovers:
+
+| Public path | Batch | NTT crossover (coefficients) |
+| --- | ---: | ---: |
+| Prepared batch multiplication | 1–3 | 1024 |
+| Prepared batch multiplication | 4–15 | 1024 |
+| Prepared batch multiplication | 16 or more | 512 |
+
+- Measured 2026-09-25 on Lunar Lake only; Golden Cove was unavailable, so no
+  paired cell exists for this campaign. Sampling and aggregation match the
+  2026-09-22 selector campaign above, and the Goldilocks arms of the same
+  runs serve as the unchanged control. Full record:
+  `bench-records/routing-qm31-m31-20260925.md`.
+
 ### Hasse evaluation over the shared Goldilocks prime
 
 Multiplicity one, steady-state evaluation, points × degree (µs):

@@ -79,7 +79,7 @@ fn check_route<F: poly_ring::PolynomialField>(route: ProductRoute) {
 }
 
 /// Forced schoolbook and Karatsuba routes match the scalar oracle on every
-/// field, including the route-less Gf8D.
+/// field, including Gf8D.
 #[cfg(feature = "internals")]
 #[test]
 fn forced_fallback_routes_match_the_oracle() {
@@ -120,23 +120,23 @@ fn forced_transform_routes_match_the_oracle() {
     check_route::<Mersenne31>(ProductRoute::Transform);
 }
 
-/// A forced transform on a route-less field is an error carrying the full
-/// product size, never a silent fallback.
+/// A forced transform past the field's additive cap is an error carrying
+/// the full product size, never a silent fallback.
 #[cfg(feature = "internals")]
 #[test]
-fn forced_transform_on_routeless_field_is_an_error() {
-    let left = oracles::noise::<Gf8D>(5, 0xD010);
-    let right = oracles::noise::<Gf8D>(7, 0xD011);
-    let full = 5 + 7 - 1;
-    let mut scratch = ConvolutionScratch::<Gf8D>::new(5, 7, 1).expect("scratch");
+fn forced_transform_past_field_cap_is_an_error() {
+    let left = oracles::noise::<Gf8D>(150, 0xD010);
+    let right = oracles::noise::<Gf8D>(140, 0xD011);
+    let full = 150 + 140 - 1;
+    let mut scratch = ConvolutionScratch::<Gf8D>::new(150, 140, 1).expect("scratch");
     let mut output = vec![0_u8; full * <Gf8D as Field>::BYTES];
     assert_eq!(
         multiply_rows_route_into::<Gf8D>(
             &mut output,
             &pack::<Gf8D>(&left),
-            5,
+            150,
             &pack::<Gf8D>(&right),
-            7,
+            140,
             1,
             full,
             ProductRoute::Transform,
