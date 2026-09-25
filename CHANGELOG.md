@@ -33,6 +33,20 @@ All notable changes to this project are documented in this file.
   rejected at construction; zero weights stay legal.
 - `HermiteError` joins the error surface; `HasseError` now carries this
   crate's own polynomial and product errors.
+- Dense `Polynomial<F>` subtraction, additive negation, and the `is_one`
+  identity query complete the named ring vocabulary. Square-free
+  decomposition handles inseparable inputs through coefficient-field
+  characteristic roots; distinct-degree and equal-degree factorization cover
+  binary extension and odd-characteristic fields with deterministic factor
+  ordering.
+- `Polynomial::factor` and `Polynomial::is_irreducible` complete the
+  factorization surface. Allocating base-field root extraction now retains
+  linear factors over odd-characteristic fields as well as binary extensions;
+  the scratch-backed root path remains binary to preserve its reuse contract.
+- `ModulusPlan<F>` and `ModulusScratch<F>` provide reusable reduction,
+  multiplication, squaring, exponentiation, inversion, and composition in
+  `F[X]/(m)`. `Polynomial::compose` and `Polynomial::compose_mod` expose the
+  corresponding one-shot compositions.
 
 - Prime-field correctness across the ring: Karatsuba recombination,
   Euclidean division, series inversion (Newton and naive), subproduct-tree
@@ -50,9 +64,9 @@ All notable changes to this project are documented in this file.
   coefficient-major batched lane rows. Routes: schoolbook/Karatsuba
   (always), the shared AFFT row pipeline (binary fields, `fft`), an NTT
   over Goldilocks and QuadMersenne31, and exact QuadMersenne31 embedding
-  for Mersenne31. `Auto` keeps the measured binary crossovers; prime routes
-  stay on Karatsuba until a benchmark panel justifies a flip (forced routes
-  under `internals` for the comparison).
+  for Mersenne31. `Auto` keeps the measured binary crossovers and selects the
+  Goldilocks NTT by shorter operand and batch width; the other prime routes
+  remain explicit under `internals`.
 - Prepared remainder tree (`eval::remainder`): `RemainderTree` and
   `RemainderScratch`, fast remainders of batched lane rows modulo arbitrary
   monic-normalized moduli by one Newton short-division descent over the
@@ -60,14 +74,66 @@ All notable changes to this project are documented in this file.
   now also uses). Prepared execution allocates nothing.
 - Competitor benchmark harness (`benches/competitors.rs`) measuring
   multiplication, division, gcd/EEA, evaluation, and interpolation against
-  `ark-poly` and `lambdaworks-math` at matched 8-byte element width. The
-  competitor record — top three non-copyleft libraries by coverage, the
-  coverage gaps labeled "no direct competitor found", and the measured
-  numbers — lives in `BENCHMARKS.md`.
+  `ark-poly` and `lambdaworks-math`. Its ring panel retains the matched-width
+  comparison, while a separate Goldilocks product panel supplies identical
+  coefficients to all libraries and checks exact agreement before timing.
+  The measured numbers live in `BENCHMARKS.md`.
+
+### Changed
+
+- Goldilocks `Polynomial::multiply` and prepared `multiply_rows_into` select
+  the existing number-theoretic transform at their measured crossovers.
+  Smaller products retain the schoolbook and Karatsuba routes.
+- `fgf` and `butterfly-fft` resolve the published registry releases the
+  ecosystem's published closure requires: `fgf` at `=1.1.0` (the release
+  `butterfly-fft` 1.0.0 pins) and `butterfly-fft` from the registry at
+  `=1.0.0`, so one `fgf` compiles across the graph. MSRV is 1.93, the floor
+  that field release requires.
+- The manifest declares its package contents with an `include` list —
+  sources, tests, benches, examples, and release documents — instead of an
+  exclude list, and carries `readme`, `homepage`, `categories`, and
+  `keywords` metadata.
+- Coset evaluation takes `&TransformPlan<F>`. The transform crate merged its
+  shifted plan into `TransformPlan::with_shift`, so the separate shifted-plan
+  parameter no longer exists, and `ProductError::Transform` carries the
+  transform crate's non-exhaustive `TransformError`.
+- **Breaking:** Output-writing free functions now take the destination first;
+  receiver methods keep the receiver and other inputs first and place output
+  last. The public names now use `extended_gcd`, `divide_exact`,
+  `BinaryRootScratch`, `binary_field_roots_into`, `RootLiftingBackend`,
+  `RootLiftingCostKey`, `select_root_lifting`,
+  `NEWTON_INTERPOLATION_CROSSOVER`, and
+  `multiply_batch_truncated_into`. Implementation-only route controls and
+  helpers moved under the unstable `internals` feature.
+- The prepared remainder descent (`RemainderTree`, and with it
+  `MultiplicityPlan` weighted evaluation) sizes each node's Newton short
+  division by the live dividend length rather than by the node's prepared
+  bound, so a dividend shorter than the tree's moduli no longer divides
+  padded rows at every node. The quotient-times-modulus product is
+  truncated to the rows the remainder reads, a single-lane descent
+  multiplies the prepared reciprocal and modulus rows in place instead of
+  broadcasting them per node, leaf output indices come from a prepared map
+  rather than a rescan, and node depths come from the construction walk.
+  Results, scratch sizes, and the allocation-free steady state are
+  unchanged.
+- Multipoint evaluation gains a lane-parallel Horner route that applies one
+  Horner step across every point at once through the packed field kernels,
+  and `MULTIPOINT_LANE_STEP_CROSSOVER` selects it against the
+  subproduct-tree descent by multiply-add step count.
+  `MultiplicityPlan::evaluate_batch_into` takes the same route for
+  single-lane requests whose every multiplicity is one. Results and the
+  allocation-free steady state are unchanged.
+- The lane-parallel Horner route now multiplies its single accumulator in
+  place with `fgf::ops::mul_elementwise_assign` and folds in each
+  coefficient with `fgf::ops::add_assign_scalar`, and the Chien scan
+  updates its running terms in place; both drop the ping-pong or
+  successor buffer and the per-step broadcast fill or copy. The crate
+  pins `fgf` 1.2.1 and `butterfly-fft` 1.0.2. Results and the
+  allocation-free steady state are unchanged.
 
 ### Fixed
 
-- `gcd_ext` and `truncated_eea` updated their Bézout cofactors with a
+- `extended_gcd` and `truncated_eea` updated their Bézout cofactors with a
   field addition where the Euclidean recurrence requires a subtraction.
   Correct in characteristic two (where subtraction is addition); over
   prime fields the cofactor identity `s·a + t·b = g` held only up to

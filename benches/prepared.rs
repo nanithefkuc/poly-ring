@@ -8,16 +8,20 @@
 //! never faked: under `internals`, the forced transform route runs only for
 //! the fields whose multiplicative (or embedded) domain covers the size.
 //!
+//! `prepared_tuning_goldilocks` compares automatic, Karatsuba, and transform
+//! routes over equal and asymmetric Goldilocks products. Inputs and scratch
+//! stay outside the timed region, and every route is checked before timing.
+//!
 //! Run with `cargo bench --bench prepared --features internals`.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use fgf::kernel::FieldKernels;
-use fgf::{Gf8B, Gf16, Goldilocks, Mersenne31, QuadMersenne31};
+use fgf::{Field, Gf8B, Gf16, Goldilocks, Mersenne31, QuadMersenne31};
 use poly_ring::PolynomialField;
 
-use poly_ring::{ConvolutionScratch, multiply_rows_into};
 #[cfg(feature = "internals")]
-use poly_ring::{ProductRoute, multiply_rows_route_into};
+use poly_ring::internals::{ProductRoute, multiply_rows_route_into};
+use poly_ring::{ConvolutionScratch, multiply_rows_into};
 
 fn noise<F: FieldKernels>(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed;
@@ -26,9 +30,9 @@ fn noise<F: FieldKernels>(len: usize, seed: u64) -> Vec<u8> {
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
-        F::write(
+        F::encode(
             &mut buffer[degree * F::BYTES..(degree + 1) * F::BYTES],
-            F::read(&state.to_le_bytes()[..F::BYTES]),
+            F::decode(&state.to_le_bytes()[..F::BYTES]),
         );
     }
     buffer
@@ -89,6 +93,7 @@ fn panel<F: PolynomialField>(criterion: &mut Criterion, name: &str, transform_ca
                 |bench, _| {
                     bench.iter(|| {
                         multiply_rows_into::<F>(
+                            &mut output,
                             &left,
                             size,
                             &right,
@@ -96,7 +101,6 @@ fn panel<F: PolynomialField>(criterion: &mut Criterion, name: &str, transform_ca
                             batch,
                             full,
                             &mut scratch,
-                            &mut output,
                         )
                         .expect("product");
                     });
@@ -113,6 +117,7 @@ fn panel<F: PolynomialField>(criterion: &mut Criterion, name: &str, transform_ca
                     |bench, _| {
                         bench.iter(|| {
                             multiply_rows_route_into(
+                                &mut output,
                                 &left,
                                 size,
                                 &right,
@@ -121,7 +126,6 @@ fn panel<F: PolynomialField>(criterion: &mut Criterion, name: &str, transform_ca
                                 full,
                                 ProductRoute::Karatsuba,
                                 &mut scratch,
-                                &mut output,
                             )
                             .expect("product");
                         });
@@ -140,6 +144,7 @@ fn panel<F: PolynomialField>(criterion: &mut Criterion, name: &str, transform_ca
                         |bench, _| {
                             bench.iter(|| {
                                 multiply_rows_route_into(
+                                    &mut output,
                                     &left,
                                     size,
                                     &right,
@@ -148,7 +153,6 @@ fn panel<F: PolynomialField>(criterion: &mut Criterion, name: &str, transform_ca
                                     full,
                                     ProductRoute::Transform,
                                     &mut scratch,
-                                    &mut output,
                                 )
                                 .expect("product");
                             });
@@ -172,5 +176,151 @@ fn prepared(c: &mut Criterion) {
     panel::<QuadMersenne31>(c, "quad-mersenne31", 1 << 20);
 }
 
-criterion_group!(benches, prepared);
+/// Goldilocks-only internal tuning group: Auto versus forced Karatsuba and
+/// forced Transform (`internals`) over the tuning geometries. Not a public
+/// record panel — internal A/B evidence for the route selectors.
+fn prepared_tuning_goldilocks(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("prepared_tuning/goldilocks");
+
+    let equal: Vec<(usize, usize)> = [64_usize, 96, 128, 160, 192, 256, 384, 512, 768, 1024]
+        .into_iter()
+        .map(|len| (len, len))
+        .collect();
+    let geometries: Vec<(usize, usize)> = equal
+        .into_iter()
+        .chain([(128, 512), (256, 1024), (512, 2048)])
+        .collect();
+
+    for (left_len, right_len) in geometries {
+        for batch in [1_usize, 4, 16] {
+            let left = lanes::<Goldilocks>(left_len, batch, 0x5EED_1000 + left_len as u64);
+            let right = lanes::<Goldilocks>(right_len, batch, 0x5EED_2000 + left_len as u64);
+            let full = left_len + right_len - 1;
+
+            let mut auto_output = vec![0_u8; full * batch * Goldilocks::BYTES];
+            #[cfg(feature = "internals")]
+            let mut karatsuba_output = auto_output.clone();
+            #[cfg(feature = "internals")]
+            let mut transform_output = auto_output.clone();
+
+            // Scratch and inputs built outside the timer.
+            let mut scratch =
+                ConvolutionScratch::<Goldilocks>::new(left_len, right_len, batch).expect("scratch");
+            scratch.prepare_transform(full, batch).expect("prepare");
+
+            multiply_rows_into::<Goldilocks>(
+                &mut auto_output,
+                &left,
+                left_len,
+                &right,
+                right_len,
+                batch,
+                full,
+                &mut scratch,
+            )
+            .expect("product");
+
+            #[cfg(feature = "internals")]
+            {
+                let mut run_forced = |output: &mut Vec<u8>, route: ProductRoute| {
+                    multiply_rows_route_into(
+                        output,
+                        &left,
+                        left_len,
+                        &right,
+                        right_len,
+                        batch,
+                        full,
+                        route,
+                        &mut scratch,
+                    )
+                    .expect("product");
+                };
+                run_forced(&mut karatsuba_output, ProductRoute::Karatsuba);
+                run_forced(&mut transform_output, ProductRoute::Transform);
+
+                // Correctness before timing: every route byte-identical.
+                assert_eq!(
+                    karatsuba_output, auto_output,
+                    "karatsuba must match auto at {left_len}x{right_len}/batch={batch}"
+                );
+                assert_eq!(
+                    transform_output, auto_output,
+                    "transform must match auto at {left_len}x{right_len}/batch={batch}"
+                );
+            }
+
+            let geometry = format!("{left_len}x{right_len}/batch={batch}");
+            group.throughput(Throughput::Elements(
+                (left_len as u64) * (right_len as u64) * batch as u64,
+            ));
+
+            group.bench_with_input(
+                BenchmarkId::new("execute/auto", &geometry),
+                &(),
+                |bench, _| {
+                    bench.iter(|| {
+                        multiply_rows_into::<Goldilocks>(
+                            &mut auto_output,
+                            &left,
+                            left_len,
+                            &right,
+                            right_len,
+                            batch,
+                            full,
+                            &mut scratch,
+                        )
+                        .expect("product");
+                    });
+                },
+            );
+
+            #[cfg(feature = "internals")]
+            {
+                group.bench_with_input(
+                    BenchmarkId::new("execute/karatsuba", &geometry),
+                    &(),
+                    |bench, _| {
+                        bench.iter(|| {
+                            multiply_rows_route_into(
+                                &mut karatsuba_output,
+                                &left,
+                                left_len,
+                                &right,
+                                right_len,
+                                batch,
+                                full,
+                                ProductRoute::Karatsuba,
+                                &mut scratch,
+                            )
+                            .expect("product");
+                        });
+                    },
+                );
+                group.bench_with_input(
+                    BenchmarkId::new("execute/transform", &geometry),
+                    &(),
+                    |bench, _| {
+                        bench.iter(|| {
+                            multiply_rows_route_into(
+                                &mut transform_output,
+                                &left,
+                                left_len,
+                                &right,
+                                right_len,
+                                batch,
+                                full,
+                                ProductRoute::Transform,
+                                &mut scratch,
+                            )
+                            .expect("product");
+                        });
+                    },
+                );
+            }
+        }
+    }
+    group.finish();
+}
+criterion_group!(benches, prepared, prepared_tuning_goldilocks);
 criterion_main!(benches);

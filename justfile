@@ -73,16 +73,17 @@ features:
 msrv:
     cargo +{{MSRV}} check --all-features --all-targets
 
-# Crates that forbid unsafe have no `MIRI` args and skip; kernel owners list
-# one `cargo miri test` argument set per line in `crate.just`.
+# A crate leaves `MIRI` empty when it lists no owned-unsafe Miri targets. Each
+# target must execute at least one crate-owned unsafe item; non-empty argument
+# sets live in that crate's `crate.just`.
 #
-# Miri over the scalar paths.
+# Miri over the listed owned-unsafe paths.
 [group('test')]
 unsafe-check:
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ -z "{{MIRI}}" ]]; then
-        echo "{{CRATE}} declares no unsafe surface; nothing for miri to check"
+        echo "{{CRATE}} lists no Miri targets"
         exit 0
     fi
     while IFS= read -r args; do
@@ -254,13 +255,58 @@ pin DEP REV:
     grep -E "^{{DEP}} = " Cargo.toml
     cargo update -p {{DEP}}
 
+# Publishing runs from a copy of the packaged archive, outside this tree.
+#
+# Cargo discovers `.cargo/config.toml` from the manifest's directory, not the
+# shell's, so an umbrella patch table reaches every invocation for this crate
+# no matter where it is launched from. Packaging then rewrites `Cargo.lock`'s
+# `[[patch.unused]]` bookkeeping — in an order that varies between runs — and
+# refuses the tree it just dirtied, so no committed lock can ever satisfy it.
+# These recipes gate on real working-tree modifications themselves, restore
+# the committed lock around each step, and upload from the unpacked archive in
+# a temporary directory, where no patch table applies and the resolution is
+# the one the registry performs from the shipped manifest.
 [group('release')]
-publish-dry:
-    cargo publish --dry-run
+publish-dry: (_publish-from-copy "--dry-run")
 
 [group('release')]
-publish: validate
-    cargo publish
+publish: validate (_publish-from-copy "")
+
+# Shared packaging and upload path. `MODE` is empty for a real upload.
+[private]
+_publish-from-copy MODE="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    crate_dir="{{invocation_directory()}}"
+    cd "${crate_dir}"
+    # `cargo package --allow-dirty` below waives cargo's own cleanliness
+    # check, so make the equivalent check here, ignoring only the lock that
+    # the patch table rewrites.
+    dirty=$(git status --porcelain -- . ':(exclude)Cargo.lock' 2>/dev/null || true)
+    if [[ -n "${dirty}" ]]; then
+        printf 'refusing to publish: working tree has changes\n%s\n' "${dirty}" >&2
+        exit 1
+    fi
+    # Cargo rewrites the lock at points of its own choosing, including during
+    # the verification build, so the committed lock is restored on every exit
+    # path rather than after each step.
+    staging=""
+    cleanup() {
+        if [[ -n "${staging}" ]]; then
+            rm -rf "${staging}"
+        fi
+        git -C "${crate_dir}" checkout HEAD -- Cargo.lock 2>/dev/null || true
+    }
+    trap cleanup EXIT
+    git -C "${crate_dir}" checkout HEAD -- Cargo.lock 2>/dev/null || true
+    cargo package --allow-dirty
+    archive=$(ls -t target/package/*.crate | head -1)
+    staging=$(mktemp -d)
+    tar xf "${archive}" -C "${staging}"
+    cd "${staging}"/*/
+    # `Cargo.toml.orig` is a reserved name a package source may not contain.
+    rm -f Cargo.toml.orig
+    cargo publish {{MODE}} --allow-dirty
 
 # ── Environment ───────────────────────────────────────────────────────────────
 
@@ -288,10 +334,10 @@ doctor:
     check "jq (perf-bench)"     jq --version
     check "perf (perf-bench)"   perf --version
     check "taskset (bench pinning)" taskset --version
-    if [[ -n "{{MIRI}}" ]]; then
+    if [[ -n "{{MIRI}}" ]] || grep -qE '^MIRI_[A-Z_]+[[:space:]]*:=' crate.just; then
         check "nightly miri"    cargo +nightly miri --version
     else
-        printf '  n/a     nightly miri (crate forbids unsafe)\n'
+        printf '  n/a     nightly miri (no Miri targets listed)\n'
     fi
     if [[ -n "${FEC_GOLDEN_CORE:-}" ]]; then
         printf '  ok      FEC_GOLDEN_CORE=%s\n' "${FEC_GOLDEN_CORE}"

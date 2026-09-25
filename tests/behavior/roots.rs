@@ -4,12 +4,12 @@
 use fgf::field::{Elem, Field};
 use fgf::kernel::FieldKernels;
 use fgf::{Gf8B, Gf16};
-use poly_ring::roots::element_key;
+use poly_ring::internals::element_key;
 use poly_ring::{
     BaseFieldRoots, Polynomial, RootError, chien_roots, linearized_roots, roth_ruckenstein_roots,
 };
 
-mod oracles;
+use crate::oracles;
 use oracles::{naive_evaluate, noise, noise_poly};
 
 /// A random polynomial with a planted set of distinct roots.

@@ -16,17 +16,11 @@ fn checked_len(context: &'static str, count: usize, unit: usize) -> Result<usize
         .ok_or(HasseError::GeometryOverflow { context })
 }
 
-/// Replace one lane row's elements by their canonical representatives.
-///
-/// No-op in characteristic two, where every value has exactly one
-/// representation.
+/// Replace one prime-field lane row's elements by canonical representatives.
 fn canonicalize_row<F: Field>(row: &mut [u8]) {
-    if F::CHARACTERISTIC == 2 {
-        return;
-    }
     for slot in row.chunks_exact_mut(F::BYTES) {
-        let value = F::read(slot);
-        F::write(slot, value.add(F::Elem::ZERO));
+        let value = F::decode(slot);
+        F::encode(slot, value.add(F::Elem::ZERO));
     }
 }
 
@@ -218,15 +212,11 @@ impl<F: PolynomialField> DerivativePlan<F> {
                 }
             } else {
                 let factor = &self.factors[output_degree];
-                if factor.value().is_zero() {
-                    output_row.fill(0);
-                } else {
-                    // Copy first, canonicalize the copy, scale in place: the
-                    // caller's raw prime lanes never reach a packed kernel.
-                    output_row.copy_from_slice(source_row);
-                    canonicalize_row::<F>(output_row);
-                    fgf::ops::mul_assign_with::<F>(output_row, factor);
-                }
+                // Copy first, canonicalize the copy, scale in place: the
+                // caller's raw prime lanes never reach a packed kernel.
+                output_row.copy_from_slice(source_row);
+                canonicalize_row::<F>(output_row);
+                fgf::ops::mul_assign_with::<F>(output_row, factor);
             }
         }
         Ok(())

@@ -13,11 +13,9 @@ use alloc::vec::Vec;
 use fgf::kernel::FieldKernels;
 
 #[cfg(feature = "fft")]
-use butterfly_fft::core::kernel::ButterflyKernels;
+use butterfly_fft::kernel::ButterflyKernels;
 #[cfg(feature = "fft")]
-use butterfly_fft::core::transform::TransformPlan;
-#[cfg(feature = "fft")]
-use butterfly_fft::shifted::ShiftedPlan;
+use butterfly_fft::transform::TransformPlan;
 
 use crate::error::{ConfigError, DomainError, EvalError};
 use crate::eval::multipoint::MultipointScratch;
@@ -44,15 +42,14 @@ mod sealed {
     use super::EvaluationDomain;
     use alloc::vec::Vec;
 
-    use butterfly_fft::core::kernel::ButterflyKernels;
-    use butterfly_fft::core::transform::TransformPlan;
-    use butterfly_fft::shifted::ShiftedPlan;
+    use butterfly_fft::kernel::ButterflyKernels;
+    use butterfly_fft::transform::TransformPlan;
 
     #[derive(Clone, Debug)]
     pub(super) enum DomainKind<F: ButterflyKernels> {
         Arbitrary,
         Subspace { plan: TransformPlan<F> },
-        Affine { plan: ShiftedPlan<F> },
+        Affine { plan: TransformPlan<F> },
     }
 
     impl<F: ButterflyKernels> EvaluationDomain<F> {
@@ -206,8 +203,8 @@ impl<F: ButterflyKernels> EvaluationDomain<F> {
                 found: values.len(),
             }));
         }
-        if self.len() <= crate::eval::newton::MODULE_INTERPOLATION_CROSSOVER {
-            crate::eval::newton::interpolate_newton_into(&self.points, values, output)
+        if self.len() <= crate::eval::newton::NEWTON_INTERPOLATION_CROSSOVER {
+            crate::eval::newton::interpolate_newton_into(output, &self.points, values)
         } else {
             let interpolant = crate::eval::multipoint::interpolate_lagrange(&self.points, values)?;
             output.assign_from(&interpolant);
@@ -300,8 +297,8 @@ impl<F: FieldKernels> EvaluationDomain<F> {
                 found: values.len(),
             }));
         }
-        if self.len() <= crate::eval::newton::MODULE_INTERPOLATION_CROSSOVER {
-            crate::eval::newton::interpolate_newton_into(&self.points, values, output)
+        if self.len() <= crate::eval::newton::NEWTON_INTERPOLATION_CROSSOVER {
+            crate::eval::newton::interpolate_newton_into(output, &self.points, values)
         } else {
             let interpolant = crate::eval::multipoint::interpolate_lagrange(&self.points, values)?;
             output.assign_from(&interpolant);
@@ -373,7 +370,7 @@ impl<F: ButterflyKernels> EvaluationDomain<F> {
         shift: F::Elem,
     ) -> Result<Self, DomainError> {
         validate_basis::<F>(size, basis)?;
-        let plan = ShiftedPlan::<F>::from_elements(size, basis, shift)?;
+        let plan = TransformPlan::<F>::with_shift(size, basis, shift)?;
         let mut points = enumerate_subspace::<F>(basis, size)?;
         for point in &mut points {
             *point = fgf::field::Elem::add(shift, *point);
@@ -386,8 +383,7 @@ impl<F: ButterflyKernels> EvaluationDomain<F> {
     pub fn transform_plan(&self) -> Option<&TransformPlan<F>> {
         match self.kind() {
             DomainKind::Arbitrary => None,
-            DomainKind::Subspace { plan } => Some(plan),
-            DomainKind::Affine { plan } => Some(plan.plan()),
+            DomainKind::Subspace { plan } | DomainKind::Affine { plan } => Some(plan),
         }
     }
 
@@ -411,17 +407,17 @@ impl<F: ButterflyKernels> EvaluationDomain<F> {
                 evaluate_arbitrary_into(polynomial, &self.points, &mut scratch.multipoint, values)
             }
             DomainKind::Subspace { plan } => crate::eval::transform::evaluate_subspace_into(
+                values,
                 polynomial,
                 plan,
                 &mut scratch.transform,
-                values,
             )
             .map_err(EvalError::Polynomial),
             DomainKind::Affine { plan } => crate::eval::transform::evaluate_coset_into(
+                values,
                 polynomial,
                 plan,
                 &mut scratch.transform,
-                values,
             )
             .map_err(EvalError::Polynomial),
         }
@@ -442,20 +438,15 @@ impl<F: ButterflyKernels> EvaluationDomain<F> {
     ) -> Result<(), EvalError> {
         match self.kind() {
             DomainKind::Arbitrary => self.interpolate_arbitrary(values, output),
-            DomainKind::Subspace { plan } => crate::eval::transform::interpolate_subspace_into(
-                plan,
-                values,
-                &mut scratch.transform,
-                output,
-            )
-            .map_err(EvalError::Polynomial),
-            DomainKind::Affine { plan } => crate::eval::transform::interpolate_subspace_into(
-                plan.plan(),
-                values,
-                &mut scratch.transform,
-                output,
-            )
-            .map_err(EvalError::Polynomial),
+            DomainKind::Subspace { plan } | DomainKind::Affine { plan } => {
+                crate::eval::transform::interpolate_subspace_into(
+                    output,
+                    plan,
+                    values,
+                    &mut scratch.transform,
+                )
+                .map_err(EvalError::Polynomial)
+            }
         }
     }
 }
@@ -620,7 +611,7 @@ fn evaluate_arbitrary_into<F: FieldKernels>(
         );
         Ok(())
     } else {
-        crate::eval::multipoint::evaluate_multipoint_into(polynomial, points, scratch, values)
+        crate::eval::multipoint::evaluate_multipoint_into(values, polynomial, points, scratch)
             .map_err(EvalError::Polynomial)
     }
 }
@@ -707,7 +698,7 @@ fn default_bit_basis<F: FieldKernels>(log_size: u32) -> Vec<F::Elem> {
     (0..log_size)
         .map(|bit| {
             let bytes = (1_u128 << bit).to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect()
 }

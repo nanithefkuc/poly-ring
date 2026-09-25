@@ -210,7 +210,7 @@ impl<F: PolynomialField> JetPlan<F> {
             .chunks_exact_mut(F::BYTES)
             .zip(coefficients)
         {
-            F::write(destination, *value);
+            F::encode(destination, *value);
         }
         let result =
             self.evaluate_batch_into(&input[..input_bytes], count, 1, scratch, &mut staged[..]);
@@ -219,7 +219,7 @@ impl<F: PolynomialField> JetPlan<F> {
                 .chunks_exact(F::BYTES)
                 .zip(output.iter_mut())
             {
-                *destination = F::read(source);
+                *destination = F::decode(source);
             }
         }
         scratch.scalar_input = input;
@@ -298,8 +298,8 @@ impl<F: PolynomialField> JetPlan<F> {
         }
         staged[..input_bytes_total].copy_from_slice(coefficients);
         for slot in staged[..input_bytes_total].chunks_exact_mut(F::BYTES) {
-            let value = F::read(slot);
-            F::write(slot, value.add(F::Elem::ZERO));
+            let value = F::decode(slot);
+            F::encode(slot, value.add(F::Elem::ZERO));
         }
         let result = self.run_translation(
             &staged[..input_bytes_total],
@@ -440,6 +440,7 @@ impl<F: PolynomialField> JetPlan<F> {
         }
         let product_rows = if high_orders == 0 { 0 } else { orders };
         multiply_rows_into::<F>(
+            &mut product[..product_rows * row_bytes],
             &broadcast[..orders * row_bytes],
             orders,
             &high[..high_orders * row_bytes],
@@ -447,7 +448,6 @@ impl<F: PolynomialField> JetPlan<F> {
             batch,
             orders,
             &mut scratch.convolution,
-            &mut product[..product_rows * row_bytes],
         )
         .expect("prepared jet product geometry");
 
@@ -529,13 +529,14 @@ impl<F: PolynomialField> JetPlan<F> {
             })?;
         // p_0 = a + T, truncated: coefficient row 0 is `a`, row 1 is one.
         let mut current = zeroed(s_bytes, "jet translation power rows")?;
-        F::write(&mut current[..F::BYTES], point);
+        F::encode(&mut current[..F::BYTES], point);
         if multiplicity > 1 {
-            F::write(&mut current[F::BYTES..2 * F::BYTES], F::Elem::ONE);
+            F::encode(&mut current[F::BYTES..2 * F::BYTES], F::Elem::ONE);
         }
         for level in 0..depth {
             if level > 0 {
                 multiply_rows_into::<F>(
+                    &mut scratch_product,
                     &current,
                     multiplicity,
                     &current,
@@ -543,7 +544,6 @@ impl<F: PolynomialField> JetPlan<F> {
                     1,
                     multiplicity,
                     &mut convolution,
-                    &mut scratch_product,
                 )
                 .map_err(HasseError::from)?;
                 current.copy_from_slice(&scratch_product);

@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: dtolnay/rust-toolchain@1.93.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --all-features
 
@@ -59,11 +59,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: default features carry fgf and butterfly-fft only
         run: |
-          cargo tree --depth 1 | tee tree.txt
+          cargo tree --depth 1 -e normal | tee tree.txt
           ! grep -Eq 'gfm|sgraph|lattica|syndrome-engine|archmage' tree.txt
       - name: no-default-features carries fgf only
         run: |
-          cargo tree --depth 1 --no-default-features | tee tree-core.txt
+          cargo tree --depth 1 -e normal --no-default-features | tee tree-core.txt
           ! grep -q butterfly-fft tree-core.txt
 
   backends:

@@ -74,7 +74,7 @@ impl<F: FieldKernels> Polynomial<F> {
     ///
     /// The internal leading-coefficient expectation holds for every nonzero
     /// remainder.
-    pub fn gcd_ext(&self, other: &Self) -> Result<BezoutRelation<F>, PolynomialError> {
+    pub fn extended_gcd(&self, other: &Self) -> Result<BezoutRelation<F>, PolynomialError> {
         // r_{-1} = a, r_0 = b; cofactors s (of a) and t (of b).
         let mut r_old = self.clone();
         let mut r = other.clone();

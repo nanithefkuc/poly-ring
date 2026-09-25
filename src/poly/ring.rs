@@ -10,7 +10,7 @@ use crate::error::{ConfigError, PolynomialError};
 use crate::geometry::checked_product;
 
 use super::dense::Polynomial;
-use super::karatsuba::karatsuba_multiply;
+use super::karatsuba::{KARATSUBA_CROSSOVER, karatsuba_multiply};
 use super::monomial::embed_integer;
 
 impl<F: FieldKernels> Polynomial<F> {
@@ -33,6 +33,28 @@ impl<F: FieldKernels> Polynomial<F> {
     pub fn add(&self, other: &Self) -> Result<Self, PolynomialError> {
         let mut result = self.clone();
         result.add_assign(other)?;
+        Ok(result)
+    }
+
+    /// Subtract `other` in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolynomialError::Config`] when the widened buffer cannot be
+    /// reserved.
+    pub fn sub_assign(&mut self, other: &Self) -> Result<(), PolynomialError> {
+        self.add_scaled_assign(F::Elem::ONE.neg(), other)
+    }
+
+    /// Return `self - other`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolynomialError::Config`] when the widened buffer cannot be
+    /// reserved.
+    pub fn sub(&self, other: &Self) -> Result<Self, PolynomialError> {
+        let mut result = self.clone();
+        result.sub_assign(other)?;
         Ok(result)
     }
 
@@ -91,7 +113,7 @@ impl<F: FieldKernels> Polynomial<F> {
         } else {
             for start in (0..self.coefficients.len()).step_by(F::BYTES) {
                 let coefficient = &mut self.coefficients[start..start + F::BYTES];
-                F::write(coefficient, F::read(coefficient).mul(scale));
+                F::encode(coefficient, F::decode(coefficient).mul(scale));
             }
         }
         self.normalize();
@@ -103,6 +125,17 @@ impl<F: FieldKernels> Polynomial<F> {
         let mut result = self.clone();
         result.scale_assign(scale);
         result
+    }
+
+    /// Replace every coefficient by its additive inverse.
+    pub fn negate_assign(&mut self) {
+        self.scale_assign(F::Elem::ONE.neg());
+    }
+
+    /// Return the additive inverse.
+    #[must_use]
+    pub fn negated(&self) -> Self {
+        self.scaled(F::Elem::ONE.neg())
     }
 
     /// Return `X^amount * self`.
@@ -133,32 +166,38 @@ impl<F: FieldKernels> Polynomial<F> {
     }
     /// Return the product, dispatched by operand size.
     ///
-    /// Below [`crate::poly::KARATSUBA_CROSSOVER`] coefficients this is the
-    /// schoolbook convolution dispatched through `fgf`'s packed AXPY kernels;
-    /// at or above it the Karatsuba middle tier applies. The tiers are
-    /// byte-identical; batched products additionally consider the AFFT tier
-    /// through [`crate::poly::multiply_batch_truncated`].
+    /// Goldilocks products at the measured crossover use an allocating NTT
+    /// path. Smaller products and fields without that route use schoolbook or
+    /// Karatsuba. Batched products select independently through
+    /// [`crate::poly::multiply_batch_truncated_into`].
     ///
     /// # Errors
     ///
-    /// Returns [`PolynomialError::Config`] when the product buffer cannot be
-    /// reserved.
+    /// Returns [`PolynomialError::Config`] when the product buffer cannot
+    /// be reserved.
     pub fn multiply(&self, other: &Self) -> Result<Self, PolynomialError> {
         if self.is_zero() || other.is_zero() {
             return Ok(Self::zero());
         }
-        if self.coefficient_count().min(other.coefficient_count())
-            >= crate::poly::KARATSUBA_CROSSOVER
+        let output_count = self
+            .coefficient_count()
+            .checked_add(other.coefficient_count())
+            .and_then(|sum| sum.checked_sub(1))
+            .ok_or(ConfigError::GeometryOverflow {
+                context: "polynomial product coefficients",
+            })?;
+        if let Some(coefficients) = super::convolution::oneshot_ntt_product::<F>(
+            &self.coefficients,
+            self.coefficient_count(),
+            &other.coefficients,
+            other.coefficient_count(),
+        ) && let Some(product) = Polynomial::from_packed(coefficients)
         {
+            return Ok(product);
+        }
+        if self.coefficient_count().min(other.coefficient_count()) >= KARATSUBA_CROSSOVER {
             karatsuba_multiply(self, other)
         } else {
-            let output_count = self
-                .coefficient_count()
-                .checked_add(other.coefficient_count())
-                .and_then(|sum| sum.checked_sub(1))
-                .ok_or(ConfigError::GeometryOverflow {
-                    context: "polynomial product coefficients",
-                })?;
             self.multiply_truncated(other, output_count)
         }
     }
@@ -304,6 +343,35 @@ impl<F: FieldKernels> Polynomial<F> {
         Ok(result)
     }
 
+    /// Compose with an arbitrary polynomial, returning `self(inner(X))`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolynomialError::Config`] when an intermediate product or
+    /// coefficient buffer cannot be reserved.
+    pub fn compose(&self, inner: &Self) -> Result<Self, PolynomialError> {
+        let mut result = Self::zero();
+        for coefficient in self.coefficients().rev() {
+            result = result.multiply(inner)?;
+            if !coefficient.is_zero() {
+                let constant = result.coefficient(0).add(coefficient);
+                result.set_coefficient(0, constant)?;
+            }
+        }
+        Ok(result)
+    }
+
+    /// Compose with `inner` and reduce modulo `modulus`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolynomialError::DivisionByZero`] or
+    /// [`PolynomialError::ConstantModulus`] for an invalid modulus, or
+    /// propagates arithmetic and storage failures.
+    pub fn compose_mod(&self, inner: &Self, modulus: &Self) -> Result<Self, PolynomialError> {
+        super::quotient::ModulusPlan::new(modulus)?.compose(self, inner)
+    }
+
     /// Return the square `self^2`.
     ///
     /// # Errors
@@ -345,10 +413,8 @@ impl<F: FieldKernels> Polynomial<F> {
 
     /// Write the schoolbook product into reusable output storage.
     ///
-    /// This is the steady-state product: no dispatch, no allocation once the
-    /// output buffer is warm. The Karatsuba and AFFT tiers are selected by
-    /// [`Self::multiply`] and
-    /// [`crate::poly::multiply_batch_truncated`] respectively.
+    /// Unlike [`Self::multiply`], this method does not select the allocating
+    /// Karatsuba or Goldilocks NTT routes.
     ///
     /// # Errors
     ///
@@ -402,7 +468,7 @@ impl<F: FieldKernels> Polynomial<F> {
             }
             let squared = coefficient.mul(coefficient);
             let start = 2 * degree * F::BYTES;
-            F::write(&mut out.coefficients[start..start + F::BYTES], squared);
+            F::encode(&mut out.coefficients[start..start + F::BYTES], squared);
         }
         out.normalize();
         Ok(())
@@ -498,7 +564,7 @@ impl<F: FieldKernels> Polynomial<F> {
                     &mut destination[start..start + F::BYTES],
                     &source[start..start + F::BYTES],
                 );
-                F::write(output, F::read(output).add(scale.mul(F::read(input))));
+                F::encode(output, F::decode(output).add(scale.mul(F::decode(input))));
             }
         }
         Ok(())

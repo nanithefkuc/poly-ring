@@ -72,7 +72,7 @@ fn main() {
     for (lane, coefficients) in lanes.iter().enumerate() {
         for (degree, value) in coefficients.iter().enumerate() {
             let offset = (degree * batch + lane) * Mersenne31::BYTES;
-            Mersenne31::write(&mut packed[offset..offset + Mersenne31::BYTES], *value);
+            Mersenne31::encode(&mut packed[offset..offset + Mersenne31::BYTES], *value);
         }
     }
     let mut scratch = plan.scratch(batch).expect("batch scratch");
@@ -86,7 +86,7 @@ fn main() {
         for (row, expected) in scalar.iter().enumerate() {
             let offset = (row * batch + lane) * Mersenne31::BYTES;
             assert_eq!(
-                Mersenne31::read(&batched[offset..offset + Mersenne31::BYTES]),
+                Mersenne31::decode(&batched[offset..offset + Mersenne31::BYTES]),
                 *expected,
                 "lane {lane} diverged from its scalar evaluation"
             );

@@ -51,7 +51,7 @@ fn noise<F: FieldKernels>(len: usize, seed: u64) -> Vec<F::Elem> {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let bytes = state.to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect()
 }
@@ -216,7 +216,7 @@ fn scalar_and_batch_lanes_agree_for_distinct_polynomials() {
         for (lane, coefficients) in lanes.iter().enumerate() {
             for (degree, value) in coefficients.iter().enumerate() {
                 let offset = (degree * batch + lane) * F::BYTES;
-                F::write(&mut packed[offset..offset + F::BYTES], *value);
+                F::encode(&mut packed[offset..offset + F::BYTES], *value);
             }
         }
         let mut batched = vec![0_u8; weight * batch * F::BYTES];
@@ -232,7 +232,7 @@ fn scalar_and_batch_lanes_agree_for_distinct_polynomials() {
                 .expect("scalar evaluate");
             for (row, expected) in scalar.iter().enumerate() {
                 let offset = (row * batch + lane) * F::BYTES;
-                assert_eq!(F::read(&batched[offset..offset + F::BYTES]), *expected);
+                assert_eq!(F::decode(&batched[offset..offset + F::BYTES]), *expected);
             }
         }
         assert_ne!(lanes[0], lanes[1]);
@@ -265,7 +265,7 @@ fn noncanonical_prime_lanes_evaluate_their_field_values() {
     for (degree, value) in raw.iter().enumerate() {
         for lane in 0..2 {
             let offset = (degree * 2 + lane) * Mersenne31::BYTES;
-            Mersenne31::write(&mut packed[offset..offset + Mersenne31::BYTES], *value);
+            Mersenne31::encode(&mut packed[offset..offset + Mersenne31::BYTES], *value);
         }
     }
     let mut output = vec![0_u8; 2 * 2 * Mersenne31::BYTES];
@@ -279,7 +279,7 @@ fn noncanonical_prime_lanes_evaluate_their_field_values() {
         for lane in 0..2 {
             let offset = (row * 2 + lane) * Mersenne31::BYTES;
             assert_eq!(
-                <Mersenne31 as Field>::read(&output[offset..offset + Mersenne31::BYTES]),
+                <Mersenne31 as Field>::decode(&output[offset..offset + Mersenne31::BYTES]),
                 *expected
             );
         }
@@ -333,6 +333,52 @@ fn errors_reject_before_mutating_and_scratch_survives() {
         output,
         horner_weighted::<Gf8B>(&coefficients, &points, &[2, 2])
     );
+}
+
+/// The lane-parallel Horner route over all-unity weights at batch one
+/// agrees with the weighted remainder descent over doubled weights (whose
+/// value rows are the same evaluations) and with the scalar oracle.
+#[test]
+fn single_weight_lane_route_matches_the_descent_and_the_oracle() {
+    fn check<F: poly_ring::PolynomialField>() {
+        for seed in 0..3 {
+            let coefficients = noise::<F>(11 + 5 * seed, 0x5EED_0500 + seed as u64);
+            let points = small_points::<F>(6);
+            let ones = [1_usize; 6];
+            let twos = [2_usize; 6];
+
+            let lane_plan = MultiplicityPlan::<F>::new(&points, &ones, 24).expect("lane plan");
+            let mut lane_scratch = lane_plan.scratch(1).expect("lane scratch");
+            let mut lane_output = vec![<F as Field>::Elem::ZERO; lane_plan.total_weight()];
+            lane_plan
+                .evaluate_into(&coefficients, &mut lane_scratch, &mut lane_output)
+                .expect("lane evaluation");
+
+            let descent_plan =
+                MultiplicityPlan::<F>::new(&points, &twos, 11 + 5 * seed).expect("descent plan");
+            let mut descent_scratch = descent_plan.scratch(1).expect("descent scratch");
+            let mut descent_output = vec![<F as Field>::Elem::ZERO; descent_plan.total_weight()];
+            descent_plan
+                .evaluate_into(&coefficients, &mut descent_scratch, &mut descent_output)
+                .expect("descent evaluation");
+
+            let expected = horner_weighted::<F>(&coefficients, &points, &ones);
+            assert_eq!(lane_plan.total_weight(), 6);
+            assert_eq!(lane_plan.offsets(), &[0, 1, 2, 3, 4, 5, 6]);
+            assert_eq!(lane_plan.points(), points.as_slice());
+            assert_eq!(lane_plan.multiplicities(), ones.as_slice());
+            assert_eq!(lane_plan.jet_count(), 6);
+            assert_eq!(lane_output, expected);
+            // The doubled-weight descent reports each evaluation as the
+            // value row of its jet: output row `2 * i` is `f(a_i)`.
+            for (index, value) in lane_output.iter().enumerate() {
+                assert_eq!(*value, descent_output[2 * index], "point {index}");
+            }
+        }
+    }
+    check::<Gf8B>();
+    check::<Goldilocks>();
+    check::<Mersenne31>();
 }
 
 proptest! {

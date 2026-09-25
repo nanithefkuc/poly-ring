@@ -305,5 +305,5 @@ fn element_from_coordinates<F: FieldKernels>(basis: &[F::Elem], mask: u128) -> F
 /// Decode a field element from its canonical little-endian key.
 fn element_from_key<F: FieldKernels>(key: u128) -> F::Elem {
     let bytes = key.to_le_bytes();
-    F::read(&bytes[..F::BYTES])
+    F::decode(&bytes[..F::BYTES])
 }

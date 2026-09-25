@@ -24,13 +24,12 @@ use super::equal_degree::element_key;
 
 /// Caller-owned reusable storage for the Chien scan.
 ///
-/// The running term vector, its successor buffer, and the fixed per-lane
-/// step factors are drawn from these buffers, so a warmed scan over a
-/// changed locator performs no heap allocation.
+/// The running term vector and the fixed per-lane step factors are drawn from
+/// these buffers, so a warmed scan over a changed locator performs no heap
+/// allocation.
 #[derive(Debug)]
 pub struct ChienScratch<F: FieldKernels> {
     state: Vec<u8>,
-    state_next: Vec<u8>,
     step: Vec<u8>,
     field: core::marker::PhantomData<F>,
 }
@@ -41,7 +40,6 @@ impl<F: FieldKernels> ChienScratch<F> {
     pub const fn new() -> Self {
         Self {
             state: Vec::new(),
-            state_next: Vec::new(),
             step: Vec::new(),
             field: core::marker::PhantomData,
         }
@@ -66,7 +64,7 @@ pub fn chien_roots<F: FieldKernels>(
 ) -> Result<BaseFieldRoots<F::Elem>, RootError> {
     let mut scratch = ChienScratch::new();
     let mut roots = Vec::new();
-    if chien_roots_into(polynomial, &mut scratch, &mut roots)? {
+    if chien_roots_into(&mut roots, polynomial, &mut scratch)? {
         Ok(BaseFieldRoots::All)
     } else {
         Ok(BaseFieldRoots::Finite(roots))
@@ -77,7 +75,7 @@ pub fn chien_roots<F: FieldKernels>(
 /// `scratch`. Returns `true` when every field element is a root (the zero
 /// polynomial); otherwise `roots` holds the root set in the canonical
 /// little-endian element-key order — the same frozen order
-/// [`super::equal_degree::base_field_roots_into`] produces, so the two
+/// [`crate::base_field_roots`] produces, so the two
 /// backends are drop-in substitutes.
 ///
 /// The scan visits all `|F|` elements, so it is intended for small fields
@@ -89,9 +87,9 @@ pub fn chien_roots<F: FieldKernels>(
 /// Returns [`RootError`] when the field is not a supported binary extension
 /// field or storage cannot be reserved.
 pub fn chien_roots_into<F: FieldKernels>(
+    roots: &mut Vec<F::Elem>,
     polynomial: &Polynomial<F>,
     scratch: &mut ChienScratch<F>,
-    roots: &mut Vec<F::Elem>,
 ) -> Result<bool, RootError> {
     if !F::ORDER.is_power_of_two() || F::BYTES == 0 || F::BYTES > 16 {
         return Err(RootError::UnsupportedField {
@@ -127,14 +125,12 @@ pub fn chien_roots_into<F: FieldKernels>(
 
     let byte_len = coefficient_count * F::BYTES;
     ensure_len(&mut scratch.state, byte_len, "Chien state")?;
-    ensure_len(&mut scratch.state_next, byte_len, "Chien state")?;
     ensure_len(&mut scratch.step, byte_len, "Chien steps")?;
     scratch.state[..byte_len].copy_from_slice(&polynomial.as_packed()[..byte_len]);
-    scratch.state_next[..byte_len].copy_from_slice(&polynomial.as_packed()[..byte_len]);
     for lane in 0..coefficient_count {
         let factor = F::GENERATOR.pow(lane as u64);
         let start = lane * F::BYTES;
-        F::write(&mut scratch.step[start..start + F::BYTES], factor);
+        F::encode(&mut scratch.step[start..start + F::BYTES], factor);
     }
 
     // `state_j = c_j * point^j` for point = 1 = γ^0 initially; each
@@ -146,21 +142,12 @@ pub fn chien_roots_into<F: FieldKernels>(
             roots.push(point);
         }
         point = point.mul(F::GENERATOR);
-        let (state, state_next) = (
-            &mut scratch.state[..byte_len],
-            &mut scratch.state_next[..byte_len],
-        );
-        ops::mul_elementwise::<F>(state_next, state, &scratch.step[..byte_len]);
-        scratch.state[..byte_len].copy_from_slice(&scratch.state_next[..byte_len]);
+        ops::mul_elementwise_assign::<F>(&mut scratch.state[..byte_len], &scratch.step[..byte_len]);
     }
 
     roots.sort_by_key(|root| element_key::<F>(*root));
     roots.dedup();
-    if roots.len() > degree {
-        return Err(RootError::FactorizationInvariant {
-            reason: "the Chien scan found more roots than the polynomial degree",
-        });
-    }
+    debug_assert!(roots.len() <= degree);
     Ok(false)
 }
 

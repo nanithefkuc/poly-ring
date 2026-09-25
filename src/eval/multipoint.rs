@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 use fgf::field::Elem;
 use fgf::kernel::FieldKernels;
 
+use super::lane::{LaneScratch, evaluate_lane_into};
 use super::tree::{ProductNode, TreePool};
 use crate::error::{ConfigError, DomainError, EvalError, PolynomialError};
 use crate::poly::Polynomial;
@@ -22,6 +23,11 @@ use crate::poly::Polynomial;
 /// tree (the tree's setup outweighs its asymptotic advantage). Measured; see
 /// `BENCHMARKS.md`.
 pub const MULTIPOINT_EVAL_CROSSOVER: usize = 16;
+
+/// Multiply-add step count (points times coefficients) at or below which the
+/// lane-parallel Horner route wins over the subproduct-tree descent.
+/// Measured; see `BENCHMARKS.md`.
+pub const MULTIPOINT_LANE_STEP_CROSSOVER: usize = 67_108_864;
 
 /// Caller-owned reusable storage for subproduct-tree evaluation.
 ///
@@ -33,6 +39,7 @@ pub struct MultipointScratch<F: FieldKernels> {
     tree: TreePool<F>,
     remainders: Vec<Polynomial<F>>,
     quotient: Polynomial<F>,
+    lane: LaneScratch<F>,
 }
 
 impl<F: FieldKernels> MultipointScratch<F> {
@@ -43,6 +50,7 @@ impl<F: FieldKernels> MultipointScratch<F> {
             tree: TreePool::new(),
             remainders: Vec::new(),
             quotient: Polynomial::zero(),
+            lane: LaneScratch::new(),
         }
     }
 }
@@ -56,38 +64,45 @@ impl<F: FieldKernels> Default for MultipointScratch<F> {
 /// Evaluate `polynomial` at every point, dispatching by point count.
 ///
 /// Below [`MULTIPOINT_EVAL_CROSSOVER`] points this is per-point Horner;
-/// above it the subproduct-tree descent. The two agree exactly.
+/// above it, the lane-parallel Horner route while the multiply-add step
+/// count stays at or below [`MULTIPOINT_LANE_STEP_CROSSOVER`], and the
+/// subproduct-tree descent beyond that. The routes agree exactly.
 ///
 /// # Errors
 ///
-/// Returns [`PolynomialError`] when a tree or remainder buffer cannot be
-/// reserved.
+/// Returns [`PolynomialError`] when a lane, tree, or remainder buffer
+/// cannot be reserved.
 pub fn evaluate_multipoint<F: FieldKernels>(
     polynomial: &Polynomial<F>,
     points: &[F::Elem],
 ) -> Result<Vec<F::Elem>, PolynomialError> {
     let mut scratch = MultipointScratch::new();
     let mut values = Vec::new();
-    evaluate_multipoint_into(polynomial, points, &mut scratch, &mut values)?;
+    evaluate_multipoint_into(&mut values, polynomial, points, &mut scratch)?;
     Ok(values)
 }
 
 /// Write the evaluations at every point into `values`, reusing `scratch`.
 ///
+/// Below [`MULTIPOINT_EVAL_CROSSOVER`] points this is per-point Horner;
+/// above it, the lane-parallel Horner route while the multiply-add step
+/// count stays at or below [`MULTIPOINT_LANE_STEP_CROSSOVER`], and the
+/// subproduct-tree descent beyond that. The routes agree exactly.
+///
 /// # Errors
 ///
-/// Returns [`PolynomialError`] when a tree or remainder buffer cannot be
-/// reserved.
+/// Returns [`PolynomialError`] when a lane, tree, or remainder buffer
+/// cannot be reserved.
 ///
 /// # Panics
 ///
 /// The tree-root expectation holds for any point set the tree was just
 /// built over.
 pub fn evaluate_multipoint_into<F: FieldKernels>(
+    values: &mut Vec<F::Elem>,
     polynomial: &Polynomial<F>,
     points: &[F::Elem],
     scratch: &mut MultipointScratch<F>,
-    values: &mut Vec<F::Elem>,
 ) -> Result<(), PolynomialError> {
     values.clear();
     if points.len() < MULTIPOINT_EVAL_CROSSOVER {
@@ -97,6 +112,19 @@ pub fn evaluate_multipoint_into<F: FieldKernels>(
                 .copied()
                 .map(|point| polynomial.evaluate(point)),
         );
+        return Ok(());
+    }
+    let steps = points.len().saturating_mul(polynomial.coefficient_count());
+    if steps <= MULTIPOINT_LANE_STEP_CROSSOVER {
+        reserve_values(values, points.len(), "multipoint values")?;
+        values.resize(points.len(), F::Elem::ZERO);
+        evaluate_lane_into(
+            values,
+            polynomial.as_packed(),
+            polynomial.coefficient_count(),
+            points,
+            &mut scratch.lane,
+        )?;
         return Ok(());
     }
     build_subproduct_tree(points, scratch)?;
@@ -166,10 +194,10 @@ pub fn interpolate_lagrange<F: FieldKernels>(
     reserve_values(&mut denominators, points.len(), "Lagrange denominators")?;
     let mut evaluate_scratch = MultipointScratch::new();
     evaluate_multipoint_into(
+        &mut denominators,
         &master_derivative,
         points,
         &mut evaluate_scratch,
-        &mut denominators,
     )?;
 
     // Scaled values c_i = v_i / M'(α_i); `inv(0) == 0` inherits from fgf,

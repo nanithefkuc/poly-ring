@@ -1,13 +1,14 @@
-//! Polynomial roots: Chien search, equal-degree splitting, linearized
-//! solving, and power-series lifting.
+//! Polynomial roots: binary Chien search, factorization-backed base-field
+//! extraction, linearized solving, and power-series lifting.
 
 mod chien;
-mod equal_degree;
+pub(crate) mod equal_degree;
 mod lift;
 mod linearized;
 
 pub use chien::{ChienScratch, chien_roots, chien_roots_into};
-pub use equal_degree::{FieldRootScratch, base_field_roots, base_field_roots_into, element_key};
+pub(crate) use equal_degree::element_key;
+pub use equal_degree::{BinaryRootScratch, base_field_roots, binary_field_roots_into};
 #[cfg(feature = "fft")]
 pub use lift::{
     AffineRootFamily, AlekhnovichLimits, AlekhnovichScratch, DEFAULT_ROTH_RUCKENSTEIN_CROSSOVER,

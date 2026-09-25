@@ -152,6 +152,12 @@ impl<F: FieldKernels> Polynomial<F> {
         self.coefficients.is_empty()
     }
 
+    /// Whether this is the multiplicative identity polynomial.
+    #[must_use]
+    pub fn is_one(&self) -> bool {
+        self.coefficient_count() == 1 && self.coefficient(0).is_one()
+    }
+
     /// Coefficient of `X^degree`, returning zero beyond the stored degree.
     #[must_use]
     pub fn coefficient(&self, degree: usize) -> F::Elem {
@@ -164,7 +170,7 @@ impl<F: FieldKernels> Polynomial<F> {
         let Some(bytes) = self.coefficients.get(start..end) else {
             return F::Elem::ZERO;
         };
-        F::read(bytes)
+        F::decode(bytes)
     }
 
     /// Stored coefficients in low-to-high order.
@@ -174,7 +180,7 @@ impl<F: FieldKernels> Polynomial<F> {
     ) -> impl DoubleEndedIterator<Item = F::Elem> + ExactSizeIterator + '_ {
         (0..self.coefficients.len())
             .step_by(F::BYTES)
-            .map(|start| F::read(&self.coefficients[start..start + F::BYTES]))
+            .map(|start| F::decode(&self.coefficients[start..start + F::BYTES]))
     }
 
     /// Leading coefficient of a nonzero polynomial.
@@ -199,7 +205,7 @@ impl<F: FieldKernels> Polynomial<F> {
         })?;
         self.resize_coefficients(required)?;
         let start = degree * F::BYTES;
-        F::write(&mut self.coefficients[start..start + F::BYTES], value);
+        F::encode(&mut self.coefficients[start..start + F::BYTES], value);
         canonicalize::<F>(&mut self.coefficients[start..start + F::BYTES]);
         self.normalize();
         Ok(())
@@ -297,6 +303,6 @@ pub(crate) fn canonicalize<F: Field>(coefficients: &mut [u8]) {
     }
     for start in (0..coefficients.len()).step_by(F::BYTES) {
         let slot = &mut coefficients[start..start + F::BYTES];
-        F::write(slot, F::read(slot).add(F::Elem::ZERO));
+        F::encode(slot, F::decode(slot).add(F::Elem::ZERO));
     }
 }

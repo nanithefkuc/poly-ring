@@ -140,7 +140,7 @@ pub fn karatsuba_multiply<F: FieldKernels>(
 pub(crate) fn schoolbook_into<F: FieldKernels>(dst: &mut [u8], a: &[u8], b: &[u8]) {
     debug_assert_eq!(dst.len() + F::BYTES, a.len() + b.len());
     for index in 0..b.len() / F::BYTES {
-        let scale = F::read(&b[index * F::BYTES..(index + 1) * F::BYTES]);
+        let scale = F::decode(&b[index * F::BYTES..(index + 1) * F::BYTES]);
         if scale.is_zero() {
             continue;
         }
@@ -221,11 +221,7 @@ pub(crate) fn karatsuba_into<F: FieldKernels>(
 
     // middle = (a_low + a_high)(b_low + b_high), or empty when either sum
     // vanished (a pure power-of-two split with an empty high part).
-    let middle_len = if sum_a.len() + sum_b.len() >= F::BYTES {
-        sum_a.len() + sum_b.len() - F::BYTES
-    } else {
-        0
-    };
+    let middle_len = (sum_a.len() + sum_b.len()).saturating_sub(F::BYTES);
     let mut middle = scratch.take_product(3 * depth + 2, middle_len);
     let sums_empty = sum_a.iter().all(|byte| *byte == 0) || sum_b.iter().all(|byte| *byte == 0);
     if !sums_empty {
@@ -256,5 +252,17 @@ fn add_elementwise<F: FieldKernels>(destination: &mut [u8], source: &[u8]) {
     let overlap = destination.len().min(source.len());
     if overlap != 0 {
         ops::add_assign::<F>(&mut destination[..overlap], &source[..overlap]);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_of_range_recombination_is_ignored() {
+        let mut destination = [0_u8; 1];
+        add_into::<fgf::Gf8B>(&mut destination, 2, &[1]);
+        sub_into::<fgf::Gf8B>(&mut destination, 2, &[1]);
+        assert_eq!(destination, [0]);
     }
 }

@@ -17,13 +17,13 @@ use crate::poly::Polynomial;
 
 use super::BaseFieldRoots;
 
-/// Caller-owned reusable storage for base-field root factorization.
+/// Caller-owned reusable storage for binary base-field root factorization.
 ///
 /// Every intermediate polynomial in `gcd(p, X^|F| + X)`, the deterministic
 /// trace splitting, and the factor stack is drawn from these buffers, so a
 /// warmed extraction over a changed input performs no heap allocation.
 #[derive(Debug)]
-pub struct FieldRootScratch<F: FieldKernels> {
+pub struct BinaryRootScratch<F: FieldKernels> {
     x: Polynomial<F>,
     pow_result: Polynomial<F>,
     pow_result_next: Polynomial<F>,
@@ -46,7 +46,7 @@ pub struct FieldRootScratch<F: FieldKernels> {
     pool: Vec<Polynomial<F>>,
 }
 
-impl<F: FieldKernels> FieldRootScratch<F> {
+impl<F: FieldKernels> BinaryRootScratch<F> {
     /// Construct empty reusable root-factorization scratch.
     #[must_use]
     pub const fn new() -> Self {
@@ -88,7 +88,7 @@ impl<F: FieldKernels> FieldRootScratch<F> {
     }
 }
 
-impl<F: FieldKernels> Default for FieldRootScratch<F> {
+impl<F: FieldKernels> Default for BinaryRootScratch<F> {
     fn default() -> Self {
         Self::new()
     }
@@ -96,44 +96,63 @@ impl<F: FieldKernels> Default for FieldRootScratch<F> {
 
 /// Return every distinct root in the polynomial's coefficient field.
 ///
-/// For a nonzero polynomial this computes `gcd(p, X^|F| + X)`, obtaining the
-/// square-free product of exactly its base-field linear factors.
-/// Deterministic characteristic-two trace maps then split that product. No
-/// field-wide evaluation scan is used.
+/// Binary extension fields use `gcd(p, X^|F| - X)` followed by deterministic
+/// absolute-trace splitting. Odd-characteristic fields use complete
+/// finite-field factorization and retain the linear factors. Both paths return
+/// the same canonical element ordering and never scan the full field.
 ///
 /// # Errors
 ///
-/// Returns [`RootError`] when supporting arithmetic fails, the field is not a
-/// supported binary extension field, or a factorization invariant breaks.
+/// Returns [`RootError`] when supporting arithmetic or factorization fails.
 pub fn base_field_roots<F: FieldKernels>(
     polynomial: &Polynomial<F>,
 ) -> Result<BaseFieldRoots<F::Elem>, RootError> {
-    let mut scratch = FieldRootScratch::new();
-    let mut roots = Vec::new();
-    if base_field_roots_into(polynomial, &mut scratch, &mut roots)? {
-        Ok(BaseFieldRoots::All)
-    } else {
-        Ok(BaseFieldRoots::Finite(roots))
+    if F::ORDER.is_power_of_two() {
+        let mut scratch = BinaryRootScratch::new();
+        let mut roots = Vec::new();
+        return if binary_field_roots_into(&mut roots, polynomial, &mut scratch)? {
+            Ok(BaseFieldRoots::All)
+        } else {
+            Ok(BaseFieldRoots::Finite(roots))
+        };
     }
+    if polynomial.is_zero() {
+        return Ok(BaseFieldRoots::All);
+    }
+    let mut roots = Vec::new();
+    for entry in polynomial.factor()? {
+        if entry.factor.degree() == Some(1) {
+            roots.push(entry.factor.coefficient(0).neg());
+        }
+    }
+    roots.sort_by_key(|root| element_key::<F>(*root));
+    roots.dedup();
+    debug_assert!(
+        roots
+            .iter()
+            .all(|root| polynomial.evaluate(*root).is_zero())
+    );
+    Ok(BaseFieldRoots::Finite(roots))
 }
 
-/// Write every distinct base-field root of `polynomial` into `roots`,
+/// Write every distinct base-field root of a binary polynomial into `roots`,
 /// reusing `scratch`. Returns `true` when every field element is a root (the
 /// zero polynomial); otherwise `roots` holds the sorted, deduplicated finite
 /// set, ordered by the canonical little-endian element key.
 ///
 /// The enumeration order is a frozen wire property: consumers map roots to
 /// positions, so it is stable across runs, backends, and the Chien backend
-/// that shares it.
+/// that shares it. Odd-characteristic callers use [`base_field_roots`]; this
+/// scratch form preserves its binary-path zero-allocation contract.
 ///
 /// # Errors
 ///
 /// Returns [`RootError`] when supporting arithmetic fails, the field is not a
 /// supported binary extension field, or a factorization invariant breaks.
-pub fn base_field_roots_into<F: FieldKernels>(
-    polynomial: &Polynomial<F>,
-    scratch: &mut FieldRootScratch<F>,
+pub fn binary_field_roots_into<F: FieldKernels>(
     roots: &mut Vec<F::Elem>,
+    polynomial: &Polynomial<F>,
+    scratch: &mut BinaryRootScratch<F>,
 ) -> Result<bool, RootError> {
     validate_binary_field::<F>()?;
     scratch.recycle_factors();
@@ -161,9 +180,7 @@ pub fn base_field_roots_into<F: FieldKernels>(
         &mut scratch.gcd_rem,
         &mut scratch.quot,
     )?;
-    let Some(base_degree) = scratch.base_factor.degree() else {
-        return Ok(false);
-    };
+    let base_degree = scratch.base_factor.degree().unwrap_or(0);
     if base_degree == 0 {
         return Ok(false);
     }
@@ -179,7 +196,7 @@ pub fn base_field_roots_into<F: FieldKernels>(
 
     let extension_degree = F::ORDER.trailing_zeros() as usize;
     while let Some(mut factor) = scratch.factors.pop() {
-        let outcome = process_factor(polynomial, &factor, extension_degree, scratch, roots);
+        let outcome = process_factor(&factor, extension_degree, scratch, roots);
         factor.set_zero();
         scratch.pool.push(factor);
         outcome?;
@@ -187,45 +204,27 @@ pub fn base_field_roots_into<F: FieldKernels>(
 
     roots.sort_by_key(|root| element_key::<F>(*root));
     roots.dedup();
-    if roots
-        .iter()
-        .any(|root| !polynomial.evaluate(*root).is_zero())
-    {
-        return Err(RootError::FactorizationInvariant {
-            reason: "the final root list contains a nonroot",
-        });
-    }
+    debug_assert!(
+        roots
+            .iter()
+            .all(|root| polynomial.evaluate(*root).is_zero())
+    );
     Ok(false)
 }
 
 fn process_factor<F: FieldKernels>(
-    polynomial: &Polynomial<F>,
     factor: &Polynomial<F>,
     extension_degree: usize,
-    scratch: &mut FieldRootScratch<F>,
+    scratch: &mut BinaryRootScratch<F>,
     roots: &mut Vec<F::Elem>,
 ) -> Result<(), RootError> {
-    let Some(factor_degree) = factor.degree() else {
-        return Err(RootError::FactorizationInvariant {
-            reason: "the factor stack contained zero",
-        });
-    };
-    if factor_degree == 0 {
-        return Ok(());
-    }
+    let factor_degree = factor
+        .degree()
+        .expect("the factor stack contains only nonzero polynomials");
     if factor_degree == 1 {
         let linear = factor.coefficient(1);
-        if linear.is_zero() {
-            return Err(RootError::FactorizationInvariant {
-                reason: "a degree-one factor has zero leading coefficient",
-            });
-        }
+        debug_assert!(!linear.is_zero());
         let root = factor.coefficient(0).mul(linear.inv());
-        if !polynomial.evaluate(root).is_zero() {
-            return Err(RootError::FactorizationInvariant {
-                reason: "an extracted linear root does not vanish in the input",
-            });
-        }
         roots.push(root);
         return Ok(());
     }
@@ -243,7 +242,7 @@ fn process_factor<F: FieldKernels>(
 /// Compute `X^|F| mod polynomial` into `scratch.pow_result` by
 /// square-and-multiply over reusable ping-pong buffers.
 fn pow_x_field_order_mod<F: FieldKernels>(
-    scratch: &mut FieldRootScratch<F>,
+    scratch: &mut BinaryRootScratch<F>,
     modulus: &Polynomial<F>,
 ) -> Result<(), RootError> {
     scratch.pow_result.assign_coefficients(&[F::Elem::ONE])?;
@@ -290,7 +289,7 @@ fn split_factor_into<F: FieldKernels>(
     factor: &Polynomial<F>,
     factor_degree: usize,
     extension_degree: usize,
-    scratch: &mut FieldRootScratch<F>,
+    scratch: &mut BinaryRootScratch<F>,
 ) -> Result<(), RootError> {
     let mut seed = F::Elem::ONE;
     for _ in 0..extension_degree {
@@ -311,18 +310,12 @@ fn split_factor_into<F: FieldKernels>(
                 &mut scratch.split_right,
                 &mut scratch.gcd_rem,
             )?;
-            if !scratch.gcd_rem.is_zero() {
-                return Err(RootError::FactorizationInvariant {
-                    reason: "a trace factor did not divide its parent",
-                });
-            }
+            debug_assert!(scratch.gcd_rem.is_zero());
             return Ok(());
         }
         seed = seed.mul(F::GENERATOR);
     }
-    Err(RootError::FactorizationInvariant {
-        reason: "the trace basis did not separate distinct roots",
-    })
+    unreachable!("the trace basis separates distinct roots")
 }
 
 /// Compute the trace polynomial `sum_{i<m} (seed*X)^(2^i) mod modulus` into
@@ -331,7 +324,7 @@ fn trace_polynomial_into<F: FieldKernels>(
     modulus: &Polynomial<F>,
     seed: F::Elem,
     extension_degree: usize,
-    scratch: &mut FieldRootScratch<F>,
+    scratch: &mut BinaryRootScratch<F>,
 ) -> Result<(), RootError> {
     scratch
         .trace_poly
@@ -460,6 +453,6 @@ fn validate_binary_field<F: FieldKernels>() -> Result<(), RootError> {
 pub fn element_key<F: FieldKernels>(element: F::Elem) -> u128 {
     debug_assert!(F::BYTES <= 16);
     let mut bytes = [0_u8; 16];
-    F::write(&mut bytes[..F::BYTES], element);
+    F::encode(&mut bytes[..F::BYTES], element);
     u128::from_le_bytes(bytes)
 }

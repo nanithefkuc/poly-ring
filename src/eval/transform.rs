@@ -11,12 +11,11 @@
 use alloc::vec::Vec;
 
 use butterfly_fft::basis::{
-    conversion_scratch_elements, inverse_interpolate_bytes, monomial_to_novel_bytes,
+    conversion_scratch_elements, interpolate_bytes_scratch, monomial_to_novel_bytes_scratch,
 };
-use butterfly_fft::core::kernel::ButterflyKernels;
-use butterfly_fft::core::transform::TransformPlan;
-use butterfly_fft::error::TransformLengthError;
-use butterfly_fft::shifted::ShiftedPlan;
+use butterfly_fft::error::TransformError;
+use butterfly_fft::kernel::ButterflyKernels;
+use butterfly_fft::transform::TransformPlan;
 
 use crate::error::{ConfigError, PolynomialError};
 use crate::poly::Polynomial;
@@ -57,7 +56,7 @@ pub fn evaluate_subspace<F: ButterflyKernels>(
     scratch: &mut TransformScratch,
 ) -> Result<Vec<F::Elem>, PolynomialError> {
     let mut values = Vec::new();
-    evaluate_subspace_into(polynomial, plan, scratch, &mut values)?;
+    evaluate_subspace_into(&mut values, polynomial, plan, scratch)?;
     Ok(values)
 }
 
@@ -68,10 +67,10 @@ pub fn evaluate_subspace<F: ButterflyKernels>(
 /// Returns [`PolynomialError`] when a row buffer cannot be reserved or the
 /// transform reports a length mismatch.
 pub fn evaluate_subspace_into<F: ButterflyKernels>(
+    values: &mut Vec<F::Elem>,
     polynomial: &Polynomial<F>,
     plan: &TransformPlan<F>,
     scratch: &mut TransformScratch,
-    values: &mut Vec<F::Elem>,
 ) -> Result<(), PolynomialError> {
     let size = plan.size();
     values.clear();
@@ -104,19 +103,19 @@ pub fn evaluate_subspace_into<F: ButterflyKernels>(
     )?;
     scratch.rows[..row_bytes].fill(0);
     scratch.rows[..coefficients.len()].copy_from_slice(coefficients);
-    monomial_to_novel_bytes::<F>(
+    monomial_to_novel_bytes_scratch::<F>(
         &mut scratch.rows[..row_bytes],
         F::BYTES,
         plan,
         &mut scratch.conversion,
     )
-    .map_err(transform_length_error)?;
+    .map_err(transform_error)?;
     plan.forward_bytes(&mut scratch.rows[..row_bytes], F::BYTES)
-        .map_err(transform_length_error)?;
+        .map_err(transform_error)?;
     values.extend(
         (0..row_bytes)
             .step_by(F::BYTES)
-            .map(|start| F::read(&scratch.rows[start..start + F::BYTES])),
+            .map(|start| F::decode(&scratch.rows[start..start + F::BYTES])),
     );
     Ok(())
 }
@@ -129,10 +128,10 @@ pub fn evaluate_subspace_into<F: ButterflyKernels>(
 /// Returns [`PolynomialError`] when a row buffer cannot be reserved or the
 /// transform reports a length mismatch.
 pub fn evaluate_coset_into<F: ButterflyKernels>(
-    polynomial: &Polynomial<F>,
-    plan: &ShiftedPlan<F>,
-    scratch: &mut TransformScratch,
     values: &mut Vec<F::Elem>,
+    polynomial: &Polynomial<F>,
+    plan: &TransformPlan<F>,
+    scratch: &mut TransformScratch,
 ) -> Result<(), PolynomialError> {
     let size = plan.size();
     values.clear();
@@ -146,7 +145,7 @@ pub fn evaluate_coset_into<F: ButterflyKernels>(
 
     let mut reduced;
     let coefficients = if polynomial.coefficient_count() > size {
-        let vanishing = Polynomial::<F>::from_coefficients(&plan.plan().vanishing_polynomial())?;
+        let vanishing = Polynomial::<F>::from_coefficients(&plan.vanishing_polynomial())?;
         reduced = polynomial.remainder(&vanishing)?;
         reduced.truncate(size);
         reduced.as_packed()
@@ -163,19 +162,19 @@ pub fn evaluate_coset_into<F: ButterflyKernels>(
     )?;
     scratch.rows[..row_bytes].fill(0);
     scratch.rows[..coefficients.len()].copy_from_slice(coefficients);
-    monomial_to_novel_bytes::<F>(
+    monomial_to_novel_bytes_scratch::<F>(
         &mut scratch.rows[..row_bytes],
         F::BYTES,
-        plan.plan(),
+        plan,
         &mut scratch.conversion,
     )
-    .map_err(transform_length_error)?;
+    .map_err(transform_error)?;
     plan.forward_bytes(&mut scratch.rows[..row_bytes], F::BYTES)
-        .map_err(transform_length_error)?;
+        .map_err(transform_error)?;
     values.extend(
         (0..row_bytes)
             .step_by(F::BYTES)
-            .map(|start| F::read(&scratch.rows[start..start + F::BYTES])),
+            .map(|start| F::decode(&scratch.rows[start..start + F::BYTES])),
     );
     Ok(())
 }
@@ -193,7 +192,7 @@ pub fn interpolate_subspace<F: ButterflyKernels>(
     scratch: &mut TransformScratch,
 ) -> Result<Polynomial<F>, PolynomialError> {
     let mut output = Polynomial::zero();
-    interpolate_subspace_into(plan, values, scratch, &mut output)?;
+    interpolate_subspace_into(&mut output, plan, values, scratch)?;
     Ok(output)
 }
 
@@ -205,10 +204,10 @@ pub fn interpolate_subspace<F: ButterflyKernels>(
 /// Returns [`PolynomialError`] on a length mismatch with the plan or when a
 /// buffer cannot be reserved.
 pub fn interpolate_subspace_into<F: ButterflyKernels>(
+    output: &mut Polynomial<F>,
     plan: &TransformPlan<F>,
     values: &[F::Elem],
     scratch: &mut TransformScratch,
-    output: &mut Polynomial<F>,
 ) -> Result<(), PolynomialError> {
     let size = plan.size();
     if values.len() != size {
@@ -224,22 +223,19 @@ pub fn interpolate_subspace_into<F: ButterflyKernels>(
         "subspace interpolation conversion",
     )?;
     for (start, &value) in (0..row_bytes).step_by(F::BYTES).zip(values) {
-        F::write(&mut scratch.rows[start..start + F::BYTES], value);
+        F::encode(&mut scratch.rows[start..start + F::BYTES], value);
     }
-    inverse_interpolate_bytes::<F>(
+    interpolate_bytes_scratch::<F>(
         &mut scratch.rows[..row_bytes],
         F::BYTES,
         plan,
         &mut scratch.conversion,
     )
-    .map_err(transform_length_error)?;
+    .map_err(transform_error)?;
     output.assign_packed(&scratch.rows[..row_bytes])
 }
 
-fn transform_length_error(error: TransformLengthError) -> PolynomialError {
-    // Length mismatches are unreachable after the pre-sized buffers above;
-    // surface them as geometry failures carrying both lengths.
-    let _ = error;
+fn transform_error(_: TransformError) -> PolynomialError {
     PolynomialError::Config(ConfigError::GeometryOverflow {
         context: "butterfly-fft transform geometry",
     })
@@ -261,4 +257,19 @@ fn ensure_len(
         values.resize(required, 0);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transform_failures_map_to_geometry_errors() {
+        assert_eq!(
+            transform_error(TransformError::GeometryOverflow),
+            PolynomialError::Config(ConfigError::GeometryOverflow {
+                context: "butterfly-fft transform geometry"
+            })
+        );
+    }
 }

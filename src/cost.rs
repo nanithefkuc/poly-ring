@@ -90,7 +90,7 @@ pub struct ProductCostKey {
 
 /// Root-extraction backend choice for one interpolation polynomial.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RootBackend {
+pub enum RootLiftingBackend {
     /// Coefficient-prefix Roth–Ruckenstein lifting.
     RothRuckenstein,
     /// Divide-and-conquer Alekhnovich lifting.
@@ -111,7 +111,7 @@ pub enum BaseRootBackend {
 /// `roth_ruckenstein_crossover`/`backend_adaptive` carry the caller's root
 /// policy so the selector stays pure while honoring explicit overrides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RootCostKey {
+pub struct RootLiftingCostKey {
     /// Weighted input size (precision times `Y` rows).
     pub weighted_coefficients: usize,
     /// `Y`-coefficient row count.
@@ -193,16 +193,66 @@ pub fn select_product(key: ProductCostKey) -> ProductBackend {
     }
 }
 
+/// Polynomial-product backend choice over a field with a multiplicative NTT.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NttProductBackend {
+    /// Packed Karatsuba, lane by lane.
+    Karatsuba,
+    /// The multiplicative NTT over the field itself.
+    Ntt,
+}
+
+/// Shorter-operand coefficient crossover for prepared Goldilocks products at
+/// small batch widths. See `BENCHMARKS.md`.
+pub const NTT_PREPARED_PRODUCT_CROSSOVER: usize = 256;
+
+/// Shorter-operand coefficient crossover for prepared Goldilocks products at
+/// medium batch widths. See `BENCHMARKS.md`.
+pub const NTT_PREPARED_BATCH4_CROSSOVER: usize = 128;
+
+/// Shorter-operand coefficient crossover for prepared Goldilocks products at
+/// wide batch widths. See `BENCHMARKS.md`.
+pub const NTT_PREPARED_BATCH16_CROSSOVER: usize = 64;
+
+/// Shorter-operand coefficient crossover for one-shot Goldilocks products.
+/// See `BENCHMARKS.md`.
+pub const NTT_ONESHOT_PRODUCT_CROSSOVER: usize = 256;
+
+/// Return the measured prepared Goldilocks crossover for a batch width.
+#[must_use]
+pub const fn ntt_prepared_product_crossover(batch: usize) -> usize {
+    match batch {
+        0..=3 => NTT_PREPARED_PRODUCT_CROSSOVER,
+        4..=15 => NTT_PREPARED_BATCH4_CROSSOVER,
+        _ => NTT_PREPARED_BATCH16_CROSSOVER,
+    }
+}
+
+/// Choose the NTT-field product backend against an explicit shorter-operand
+/// crossover. Pure. See `BENCHMARKS.md`.
+#[must_use]
+pub fn select_ntt_product(
+    left_coefficients: usize,
+    right_coefficients: usize,
+    crossover: usize,
+) -> NttProductBackend {
+    if left_coefficients.min(right_coefficients) >= crossover {
+        NttProductBackend::Ntt
+    } else {
+        NttProductBackend::Karatsuba
+    }
+}
+
 /// Choose the root-extraction backend. Pure. See `BENCHMARKS.md`.
 ///
 /// Without the `fft` feature the Alekhnovich tier does not exist and the
 /// selector degrades cleanly to Roth–Ruckenstein.
 #[must_use]
-pub fn select_root(key: RootCostKey) -> RootBackend {
+pub fn select_root_lifting(key: RootLiftingCostKey) -> RootLiftingBackend {
     #[cfg(not(feature = "fft"))]
     {
         let _ = key;
-        RootBackend::RothRuckenstein
+        RootLiftingBackend::RothRuckenstein
     }
     #[cfg(feature = "fft")]
     {
@@ -212,9 +262,9 @@ pub fn select_root(key: RootCostKey) -> RootBackend {
             key.roth_ruckenstein_crossover
         };
         if key.weighted_coefficients <= crossover {
-            RootBackend::RothRuckenstein
+            RootLiftingBackend::RothRuckenstein
         } else {
-            RootBackend::Alekhnovich
+            RootLiftingBackend::Alekhnovich
         }
     }
 }
@@ -271,7 +321,7 @@ mod tests {
     #[cfg(feature = "fft")]
     #[test]
     fn root_selection_honors_the_adaptive_scalar_guard() {
-        let key = RootCostKey {
+        let key = RootLiftingCostKey {
             weighted_coefficients: 100_000,
             y_degree: 4,
             target_precision: 128,
@@ -279,13 +329,16 @@ mod tests {
             roth_ruckenstein_crossover: 20_000,
             backend_adaptive: true,
         };
-        assert_eq!(select_root(key), RootBackend::RothRuckenstein);
         assert_eq!(
-            select_root(RootCostKey {
+            select_root_lifting(key),
+            RootLiftingBackend::RothRuckenstein
+        );
+        assert_eq!(
+            select_root_lifting(RootLiftingCostKey {
                 backend_adaptive: false,
                 ..key
             }),
-            RootBackend::Alekhnovich
+            RootLiftingBackend::Alekhnovich
         );
     }
 
@@ -304,6 +357,38 @@ mod tests {
                 field_order: 256
             }),
             BaseRootBackend::EqualDegree
+        );
+    }
+
+    #[test]
+    fn ntt_selection_uses_the_shorter_operand_and_batch_bucket() {
+        assert_eq!(
+            select_ntt_product(
+                NTT_ONESHOT_PRODUCT_CROSSOVER - 1,
+                NTT_ONESHOT_PRODUCT_CROSSOVER * 4,
+                NTT_ONESHOT_PRODUCT_CROSSOVER,
+            ),
+            NttProductBackend::Karatsuba
+        );
+        assert_eq!(
+            select_ntt_product(
+                NTT_ONESHOT_PRODUCT_CROSSOVER,
+                NTT_ONESHOT_PRODUCT_CROSSOVER,
+                NTT_ONESHOT_PRODUCT_CROSSOVER,
+            ),
+            NttProductBackend::Ntt
+        );
+        assert_eq!(
+            ntt_prepared_product_crossover(1),
+            NTT_PREPARED_PRODUCT_CROSSOVER
+        );
+        assert_eq!(
+            ntt_prepared_product_crossover(4),
+            NTT_PREPARED_BATCH4_CROSSOVER
+        );
+        assert_eq!(
+            ntt_prepared_product_crossover(16),
+            NTT_PREPARED_BATCH16_CROSSOVER
         );
     }
 }

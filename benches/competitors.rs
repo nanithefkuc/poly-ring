@@ -16,6 +16,10 @@
 //!   explicitly labelled composed baseline (independent `u128` binomials,
 //!   then each library's per-order evaluation loop), asserted equal to this
 //!   crate's jets before any timing.
+//! - `matched_goldilocks_multiply`: multiplying over the shared Goldilocks
+//!   field. This crate, ark-poly, and lambdaworks receive identical
+//!   mathematical coefficients, and every output coefficient is checked
+//!   before timing. Allocation and destruction stay inside the timed region.
 //!
 //! All competitors are dev-only (ground rule 3 exception); copyleft NTL,
 //! FLINT, and gf2x stay out of the build and the measurement set.
@@ -74,7 +78,7 @@ mod ring_panel {
     fn noise_poly(len: usize, seed: u64) -> poly_ring::Polynomial<Gf64> {
         let coefficients: Vec<Gf64Elem> = noise_elems(len, seed)
             .iter()
-            .map(|bytes| <Gf64 as fgf::field::Field>::read(bytes))
+            .map(|bytes| <Gf64 as fgf::field::Field>::decode(bytes))
             .collect();
         poly_ring::Polynomial::from_coefficients(&coefficients).expect("bench polynomial")
     }
@@ -96,7 +100,7 @@ mod ring_panel {
     }
 
     fn gf_elem(bytes: &[u8; 8]) -> Gf64Elem {
-        <Gf64 as fgf::field::Field>::read(bytes)
+        <Gf64 as fgf::field::Field>::decode(bytes)
     }
 
     fn lw_elem(bytes: &[u8; 8]) -> LwFe {
@@ -168,7 +172,7 @@ mod ring_panel {
         group.finish();
     }
 
-    /// Both sides compute the Bézout triple (ours: `gcd_ext`, lambdaworks:
+    /// Both sides compute the Bézout triple (ours: `extended_gcd`, lambdaworks:
     /// `xgcd`). ark-poly offers no polynomial gcd or EEA at all, so it has no
     /// row here; that gap is recorded in `BENCHMARKS.md`.
     pub fn gcd_eea(c: &mut Criterion) {
@@ -179,7 +183,7 @@ mod ring_panel {
         let lw_right = noise_lw(300, 0x5EED_4001);
 
         group.bench_function("ours_ext/400x300", |b| {
-            b.iter(|| left.gcd_ext(&right).expect("extended gcd"))
+            b.iter(|| left.extended_gcd(&right).expect("extended gcd"))
         });
         group.bench_function("lambdaworks_xgcd/400x300", |b| {
             b.iter(|| lw_left.xgcd(&lw_right))
@@ -729,6 +733,191 @@ mod hasse_panel {
     }
 }
 
+mod matched_goldilocks_multiply {
+    //! One field, three libraries, identical coefficients: the matched
+    //! multiply comparison the width-matched `ring_panel` cannot give.
+
+    use ark_ff::PrimeField;
+    use ark_poly::DenseUVPolynomial;
+    use criterion::{BenchmarkId, Criterion, Throughput};
+    use fgf::{Goldilocks, goldilocks};
+    use lambdaworks_math::field::element::FieldElement;
+    use lambdaworks_math::field::fields::montgomery_backed_prime_fields::{
+        IsModulus, U64PrimeField,
+    };
+    use lambdaworks_math::polynomial::Polynomial as LwPolynomial;
+    use lambdaworks_math::unsigned_integer::element::U64;
+    use poly_ring::Polynomial;
+    use std::sync::LazyLock;
+
+    /// The Goldilocks prime every side shares.
+    const MODULUS: u128 = 18_446_744_069_414_584_321;
+
+    /// The Montgomery unscale element `R^{-1}` as a canonical `u128`.
+    static LW_UNSCALE: LazyLock<u128> = LazyLock::new(|| mod_inverse(1_u128 << 64));
+
+    type Ours = Polynomial<Goldilocks>;
+    type ArkPoly = ark_poly::polynomial::univariate::DensePolynomial<ArkFp64>;
+    type LwFe = FieldElement<Lw64>;
+    type LwPoly = LwPolynomial<LwFe>;
+
+    /// ark-ff Goldilocks prime, one 64-bit limb.
+    #[derive(ark_ff::MontConfig)]
+    #[modulus = "18446744069414584321"]
+    #[generator = "7"]
+    pub struct ArkFp64Config;
+
+    pub type ArkFp64 = ark_ff::Fp<ark_ff::MontBackend<ArkFp64Config, 1>, 1>;
+
+    /// Goldilocks modulus for lambdaworks' Montgomery-backed `U64` field.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct GoldiModulus;
+
+    impl IsModulus<U64> for GoldiModulus {
+        const MODULUS: U64 = U64::from_u64(18_446_744_069_414_584_321);
+    }
+
+    type Lw64 = U64PrimeField<GoldiModulus>;
+
+    /// One deterministic raw `u64` from the fixed-seed LCG in fgf's noise
+    /// shape.
+    fn next_raw(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        *state
+    }
+
+    /// The shared coefficient stream: raw `u64` values reduced into the
+    /// Goldilocks prime. Every library is built from these exact values.
+    fn shared_coefficients(len: usize, seed: u64) -> Vec<u128> {
+        let mut state = seed;
+        (0..len)
+            .map(|_| u128::from(next_raw(&mut state)) % MODULUS)
+            .collect()
+    }
+
+    fn ours_poly(values: &[u128]) -> Ours {
+        let coefficients: Vec<goldilocks::Elem> = values
+            .iter()
+            .map(|&value| goldilocks::Elem::from_raw(value as u64))
+            .collect();
+        Ours::from_coefficients(&coefficients).expect("bench polynomial")
+    }
+
+    fn ark_poly_of(values: &[u128]) -> ArkPoly {
+        ArkPoly::from_coefficients_vec(
+            values
+                .iter()
+                .map(|&value| ArkFp64::from(value as u64))
+                .collect(),
+        )
+    }
+
+    fn lw_poly_of(values: &[u128]) -> LwPoly {
+        LwPoly::new(
+            &values
+                .iter()
+                .map(|&value| LwFe::new(U64::from_u64(value as u64)))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// `p - 2` by Fermat exponentiation; inputs are below the prime `p`.
+    fn mod_inverse(value: u128) -> u128 {
+        let mut result: u128 = 1;
+        let mut base = value % MODULUS;
+        let mut exponent = MODULUS - 2;
+        while exponent != 0 {
+            if exponent & 1 != 0 {
+                result = result * base % MODULUS;
+            }
+            base = base * base % MODULUS;
+            exponent >>= 1;
+        }
+        result
+    }
+
+    /// The canonical Goldilocks value of a lambdaworks element.
+    ///
+    /// The Montgomery-backed field stores residues scaled by `R = 2^64`, so
+    /// one multiply by `R^{-1}` unscales before the read.
+    fn lw_canonical(element: &LwFe) -> u128 {
+        u128::from(
+            (element.clone() * LwFe::new(U64::from_u64(*LW_UNSCALE as u64)))
+                .value()
+                .limbs[0],
+        )
+    }
+
+    /// Canonical full product coefficients, low degree first.
+    fn ours_canonical(product: &Ours) -> Vec<u128> {
+        product
+            .coefficients()
+            .map(|element| u128::from(element.to_raw()))
+            .collect()
+    }
+
+    fn ark_canonical(product: &ArkPoly) -> Vec<u128> {
+        product
+            .coeffs()
+            .iter()
+            .map(|element| u128::from(element.into_bigint().0[0]))
+            .collect()
+    }
+
+    fn lw_canonical_poly(product: &LwPoly) -> Vec<u128> {
+        product.coefficients.iter().map(lw_canonical).collect()
+    }
+
+    pub fn matched_goldilocks_multiply(c: &mut Criterion) {
+        let mut group = c.benchmark_group("competitor_multiply_matched_goldilocks");
+
+        for len in [64_usize, 256, 1024, 4096] {
+            let left_values = shared_coefficients(len, 0x6A11_1000);
+            let right_values = shared_coefficients(len, 0x6A11_2000);
+
+            // Identical mathematical coefficients into all three libraries.
+            let ours_left = ours_poly(&left_values);
+            let ours_right = ours_poly(&right_values);
+            let ark_left = ark_poly_of(&left_values);
+            let ark_right = ark_poly_of(&right_values);
+            let lw_left = lw_poly_of(&left_values);
+            let lw_right = lw_poly_of(&right_values);
+
+            // Correctness before timing: every coefficient of every product
+            // exactly equal after canonical conversion.
+            let expected = ours_canonical(&ours_left.multiply(&ours_right).expect("product"));
+            assert_eq!(expected.len(), 2 * len - 1, "full product length");
+            let ark_product = &ark_left * &ark_right;
+            assert_eq!(
+                ark_canonical(&ark_product),
+                expected,
+                "ark product must match before timing at len {len}"
+            );
+            let lw_product = lw_left.mul_with_ref(&lw_right);
+            assert_eq!(
+                lw_canonical_poly(&lw_product),
+                expected,
+                "lambdaworks product must match before timing at len {len}"
+            );
+
+            group.throughput(Throughput::Elements((len as u64) * (len as u64)));
+
+            // Allocation and destruction of each product stay timed.
+            group.bench_function(BenchmarkId::new("ours_public_multiply", len), |b| {
+                b.iter(|| ours_left.multiply(&ours_right).expect("product"))
+            });
+            group.bench_function(BenchmarkId::new("ark_public_mul", len), |b| {
+                b.iter(|| &ark_left * &ark_right)
+            });
+            group.bench_function(BenchmarkId::new("lambdaworks_public_mul", len), |b| {
+                b.iter(|| lw_left.mul_with_ref(&lw_right))
+            });
+        }
+        group.finish();
+    }
+}
 criterion_group!(
     benches,
     ring_panel::multiply,
@@ -736,6 +925,7 @@ criterion_group!(
     ring_panel::gcd_eea,
     ring_panel::evaluate,
     ring_panel::interpolate,
-    hasse_panel::competitors
+    hasse_panel::competitors,
+    matched_goldilocks_multiply::matched_goldilocks_multiply
 );
 criterion_main!(benches);

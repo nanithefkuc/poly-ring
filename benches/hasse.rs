@@ -24,7 +24,7 @@ fn noise<F: FieldKernels>(len: usize, seed: u64) -> Vec<F::Elem> {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let bytes = state.to_le_bytes();
-            F::read(&bytes[..F::BYTES])
+            F::decode(&bytes[..F::BYTES])
         })
         .collect()
 }
@@ -40,7 +40,7 @@ fn points<F: FieldKernels>(count: usize) -> Vec<F::Elem> {
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         let bytes = state.to_le_bytes();
-        let value = F::read(&bytes[..F::BYTES]).add(F::Elem::ZERO);
+        let value = F::decode(&bytes[..F::BYTES]).add(F::Elem::ZERO);
         if !distinct.contains(&value) {
             distinct.push(value);
         }

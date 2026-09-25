@@ -65,7 +65,7 @@ impl<F: FieldKernels> Polynomial<F> {
     /// [`PolynomialError::NonExactDivision`] when the remainder is nonzero,
     /// and [`PolynomialError::Config`] when an output buffer cannot be
     /// reserved.
-    pub fn exact_divide(&self, divisor: &Self) -> Result<Self, PolynomialError> {
+    pub fn divide_exact(&self, divisor: &Self) -> Result<Self, PolynomialError> {
         let (quotient, remainder) = self.div_rem(divisor)?;
         if remainder.is_zero() {
             Ok(quotient)
@@ -228,8 +228,8 @@ impl<F: FieldKernels> Polynomial<F> {
                 .expect("nonzero remainder has a leading coefficient")
                 .mul(divisor_leading_inverse);
             let start = shift * F::BYTES;
-            let updated = F::read(&quotient.coefficients[start..start + F::BYTES]).add(scale);
-            F::write(&mut quotient.coefficients[start..start + F::BYTES], updated);
+            let updated = F::decode(&quotient.coefficients[start..start + F::BYTES]).add(scale);
+            F::encode(&mut quotient.coefficients[start..start + F::BYTES], updated);
             remainder.add_scaled_shifted_assign(scale.neg(), divisor, shift)?;
         }
         quotient.normalize();
