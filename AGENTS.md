@@ -21,6 +21,14 @@ packed-buffer kernels belong to `fgf`; subspace/coset transforms belong to
 `butterfly-fft`; matrices belong to `gfm`; wire formats, codes, and decoders
 belong to consumers. Never re-host a lower crate's solved problem.
 
+- **Bit-vector GF(2) reductions stay local (P20 exception).** The
+  `linearized_roots` affine solve and the subspace-basis independence check
+  reduce `u128` element keys, not matrices: the byte-oriented field kernels
+  have no bit-packed GF(2) form by design. The non-`fft` build needs the
+  basis check where the transform crate's own validation cannot run. The
+  `fgf` pins match again (`=1.2.1` here and in `gfm` 1.0.1), so a future
+  move into `gfm` is unblocked on versioning whenever a consumer needs it.
+
 `src/cost.rs` holds pure strategy selectors over explicit cost keys.
 `BackendClass::detect` queries upstream field selection; selectors themselves
 perform no CPU detection. Threshold changes require independent correctness
@@ -234,7 +242,7 @@ license with the AI-authorship warning. `CHANGELOG.md` follows Keep a
 Changelog 1.1.0 with a maintained topmost `Unreleased` section; breaking
 entries carry migration guidance.
 
-The manifest keeps `publish = false`. The `include` list follows the
+The manifest is publishable and carries no `publish = false` gate. The `include` list follows the
 ecosystem convention — `src/`, `tests/`, `benches/`, `examples/`, `README.md`,
 `LICENSE`, `CHANGELOG.md` — so a packaged tree carries the library, its
 tests and benches, and user-facing documents only; `AGENTS.md`,

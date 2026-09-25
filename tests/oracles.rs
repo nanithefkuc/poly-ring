@@ -254,6 +254,9 @@ pub fn naive_series_inverse<F: FieldKernels>(
     polynomial: &Polynomial<F>,
     t: usize,
 ) -> Polynomial<F> {
+    if t == 0 {
+        return Polynomial::zero();
+    }
     let mut coefficients = vec![F::Elem::ZERO; t];
     coefficients[0] = polynomial.coefficient(0).inv();
     for degree in 1..t {

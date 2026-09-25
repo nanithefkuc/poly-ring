@@ -13,7 +13,7 @@ use poly_ring::internals::karatsuba_multiply;
 use poly_ring::{Polynomial, PolynomialError};
 
 use crate::oracles;
-use oracles::{naive_evaluate, naive_multiply, noise, noise_poly};
+use oracles::{naive_evaluate, naive_multiply, naive_series_inverse, noise, noise_poly};
 
 fn m31(value: u32) -> mersenne31::Elem {
     mersenne31::Elem::from_raw(value)
@@ -168,13 +168,14 @@ fn karatsuba_maps_zero_to_zero() {
     );
 }
 
-/// The linear series solver maps an empty precision to zero and
-/// rejects a zero constant term instead of dividing by it.
+/// Series inversion maps an empty precision to zero and rejects a zero
+/// constant term instead of dividing by it.
 #[test]
-fn naive_series_inversion_edges_hold() {
+fn series_inversion_edges_hold() {
     let unit = noise_poly::<Gf8B>(6, 0xF090);
+    assert!(naive_series_inverse(&unit, 0).is_zero());
     assert!(
-        unit.inverse_mod_x_power_naive(0)
+        unit.inverse_mod_x_power(0)
             .expect("empty precision")
             .is_zero()
     );
@@ -182,9 +183,9 @@ fn naive_series_inversion_edges_hold() {
     coefficients[0] = <Gf8B as Field>::Elem::ZERO;
     let singular = Polynomial::<Gf8B>::from_coefficients(&coefficients).expect("singular");
     assert_eq!(
-        singular.inverse_mod_x_power_naive(6).map(|_| ()),
+        singular.inverse_mod_x_power(6).map(|_| ()),
         Err(PolynomialError::ZeroConstantTerm {
-            context: "linear truncated power-series inversion",
+            context: "truncated power-series inversion",
         })
     );
 }

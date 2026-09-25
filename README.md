@@ -37,22 +37,23 @@ polynomials and returns polynomials.
 
 ## Installation
 
-The minimum supported Rust version is 1.93, edition 2024. Publication is
-disabled in the manifest. Use a local checkout with the same `fgf` release
-as the library so field types match:
+The minimum supported Rust version is 1.93, edition 2024.
 
 ```toml
 [dependencies]
-poly-ring = { path = "../poly-ring" }
-fgf = "=1.1.0"
+poly-ring = "1.0"
+fgf = "=1.2.1"
 ```
+
+The exact `fgf` pin keeps one field-type copy across the graph; it tracks
+the release in `Cargo.toml`.
 
 For the portable `no_std` core ring without the transform feature:
 
 ```toml
 [dependencies]
-poly-ring = { path = "../poly-ring", default-features = false }
-fgf = { version = "=1.1.0", default-features = false }
+poly-ring = { version = "1.0", default-features = false }
+fgf = { version = "=1.2.1", default-features = false }
 ```
 
 ## Quick start
@@ -107,10 +108,11 @@ GF(2) is outside that engine's scope.
 | GF((2^31 − 1)²) | `QuadMersenne31` | number-theoretic transform |
 | GF(2^31 − 1) | `Mersenne31` | embedded into `QuadMersenne31` |
 | GF(2^8), polynomial `0x11D` | `Gf8D` | schoolbook/Karatsuba only |
-
-Availability does not imply automatic selection. Goldilocks automatic products
-use the NTT once the shorter operand reaches the measured crossover; the other
-prime-field routes remain explicit. Without `fft`, prepared products use
+Availability does not imply automatic selection. Goldilocks and
+QuadMersenne31 automatic products use the NTT once the shorter operand
+reaches the measured crossover, and Mersenne31 products use the embedded
+route past its own crossover; the one-shot `Polynomial::multiply` selects
+the NTT for Goldilocks only. Without `fft`, prepared products use
 schoolbook and Karatsuba.
 
 ## The ring's surface
@@ -122,8 +124,7 @@ schoolbook and Karatsuba.
 | Factorization | Square-free separation, distinct-degree factors, and complete irreducible factorization. |
 | Hasse derivatives and jets | `DerivativePlan` prepares one fixed derivative order; `JetPlan` computes the truncated Taylor translation `f(a + T) mod T^s`. |
 | Evaluation | Horner, lane-parallel Horner over the packed field kernels, and subproduct-tree multipoint evaluation selected by request geometry; `RemainderTree` reduction modulo arbitrary polynomials, Newton and Lagrange interpolation, and `EvaluationDomain` selection. |
-| Multiplicity and Hermite | `MultiplicityPlan` evaluates with per-point multiplicities; `HermitePlan` reconstructs from weighted values. |
-| Roots | Binary Chien search, factorization-backed base-field roots, linearized solving, and power-series lifting; affine root families and Alekhnovich lifting require `fft`. |
+| Roots | Binary Chien search, factorization-backed base-field roots, linearized solving, and power-series lifting over binary extension fields; affine root families and Alekhnovich lifting require `fft`. |
 | Prepared quotient rings | `ModulusPlan` prepares reduction, arithmetic, and composition modulo an arbitrary modulus; `ModulusScratch` holds execution workspace. |
 | Power series | Truncated inversion and series division. |
 
@@ -135,7 +136,6 @@ schoolbook and Karatsuba.
 | `std` | `fgf` runtime support |
 | `simd` | `fgf` and `butterfly-fft` architecture kernels; implies `std` |
 | `fft` | structured evaluation, additive and multiplicative product transforms, and transform-backed lifting; works without `std` |
-| `parallel` | off-by-default placeholder for batch-axis parallelism; it adds no acceleration |
 | `internals` | this crate's own unstable benchmarking surface, never `fgf`'s; no compatibility promise |
 
 Without default features the crate builds `no_std` plus `alloc`: gcd/EEA,

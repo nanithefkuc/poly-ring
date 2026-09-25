@@ -64,41 +64,6 @@ impl<F: FieldKernels> Polynomial<F> {
         Ok(inverse)
     }
 
-    /// Return `self^{-1} mod x^t`, solving one coefficient at a time.
-    ///
-    /// This is the deliberately naive form kept beside the Newton doubling:
-    /// it costs `O(t²)` and shares no code with
-    /// [`Self::inverse_mod_x_power`], so the two agree or one is wrong.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PolynomialError::ZeroConstantTerm`] when the constant
-    /// coefficient is zero and [`PolynomialError::Config`] when the
-    /// coefficient buffer cannot be reserved.
-    pub fn inverse_mod_x_power_naive(&self, t: usize) -> Result<Self, PolynomialError> {
-        if t == 0 {
-            return Ok(Self::zero());
-        }
-        let constant = self.coefficient(0);
-        if constant.is_zero() {
-            return Err(PolynomialError::ZeroConstantTerm {
-                context: "linear truncated power-series inversion",
-            });
-        }
-        let mut coefficients = crate::geometry::try_zeroed::<F::Elem>("series inverse", t)?;
-        coefficients[0] = constant.inv();
-        for degree in 1..t {
-            // 0 = sum_{j<=degree} a_j · b_{degree−j}, so
-            // b_degree = −a_0^{-1} · sum_{j>=1} a_j · b_{degree−j}.
-            let mut discrepancy = F::Elem::ZERO;
-            for j in 1..=degree {
-                discrepancy = discrepancy.add(self.coefficient(j).mul(coefficients[degree - j]));
-            }
-            coefficients[degree] = discrepancy.neg().mul(coefficients[0]);
-        }
-        Self::from_coefficients(&coefficients)
-    }
-
     /// Return `self` with coefficients in reverse order.
     ///
     /// `reverse(p)(X) = X^{deg p} · p(1/X)`; the zero polynomial reverses to

@@ -24,7 +24,6 @@ fn assert_series_identities<F: FieldKernels>() {
             "a · a⁻¹ must be 1 mod x^{t}"
         );
         // Newton doubling equals the linear schoolbook solve.
-        assert_eq!(inverse, unit.inverse_mod_x_power_naive(t).expect("naive"));
         assert_eq!(inverse, naive_series_inverse(&unit, t));
         // The inverse of a unit is its reciprocal.
         let constant = Polynomial::<F>::constant(unit.coefficient(0)).expect("constant");
@@ -196,7 +195,6 @@ fn prime_series_inverse_matches_the_geometric_series() {
             inverse,
             Polynomial::<F>::from_coefficients(&[one; 5]).expect("geometric series")
         );
-        assert_eq!(inverse, unit.inverse_mod_x_power_naive(5).expect("naive"));
         assert_eq!(inverse, naive_series_inverse(&unit, 5));
     }
     check::<Mersenne31>();
@@ -216,7 +214,6 @@ fn prime_series_identities_hold() {
                 "a · a⁻¹ must be 1 mod x^{t} over {}",
                 F::NAME
             );
-            assert_eq!(inverse, unit.inverse_mod_x_power_naive(t).expect("naive"));
             assert_eq!(inverse, naive_series_inverse(&unit, t));
 
             // Series division agrees with multiply-by-inverse.

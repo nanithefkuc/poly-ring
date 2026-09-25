@@ -14,6 +14,8 @@
 //! ([`DEFAULT_ROTH_RUCKENSTEIN_CROSSOVER`]) and composes the AFFT batched
 //! product through `butterfly-fft` (hence its `fft` feature gate).
 
+//! Both backends run over binary extension fields only.
+
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
@@ -168,7 +170,8 @@ impl<F: FieldKernels> Frame<F> {
 /// # Errors
 ///
 /// Returns [`RootError`] when supporting arithmetic fails, the rows are
-/// empty, or a caller-provided limit is reached.
+/// empty, a caller-provided limit is reached, or the field is not a binary
+/// extension field ([`RootError::UnsupportedField`]).
 pub fn roth_ruckenstein_roots<F: FieldKernels>(
     rows: &[Polynomial<F>],
     max_degree: usize,
@@ -189,7 +192,8 @@ pub fn roth_ruckenstein_roots<F: FieldKernels>(
 /// # Errors
 ///
 /// Returns [`RootError`] when supporting arithmetic fails, the rows are
-/// empty, or a caller-provided limit is reached.
+/// empty, a caller-provided limit is reached, or the field is not a binary
+/// extension field ([`RootError::UnsupportedField`]).
 ///
 /// # Panics
 ///
@@ -797,6 +801,9 @@ impl<F: ButterflyKernels> Default for AlekhnovichScratch<F> {
 /// precision of its node. Small weighted inputs use the configured
 /// Roth–Ruckenstein crossover.
 ///
+/// Runs over binary extension fields only: the transform backend has no
+/// prime-field kernels.
+///
 /// # Errors
 ///
 /// Returns [`RootError`] when supporting arithmetic fails, the rows are
@@ -818,6 +825,9 @@ pub fn alekhnovich_roots<F: ButterflyKernels>(
 /// Below the Roth–Ruckenstein crossover the extraction runs entirely on
 /// pooled scratch and performs no allocation once warmed; larger inputs use
 /// the divide-and-conquer path and replace `output`.
+///
+/// Runs over binary extension fields only: the transform backend has no
+/// prime-field kernels.
 ///
 /// # Errors
 ///

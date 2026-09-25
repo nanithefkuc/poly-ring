@@ -471,18 +471,19 @@ fn forced_transform_without_a_plan_is_an_error() {
         }))
     );
 
-    // Gf8D has no transform route at any size.
-    let left = oracles::noise::<Gf8D>(4, 0xC803);
-    let right = oracles::noise::<Gf8D>(3, 0xC804);
-    let full = 4 + 3 - 1;
-    let mut scratch = ConvolutionScratch::<Gf8D>::new(4, 3, 1).expect("scratch");
+    // Gf8D caps its additive transform at the field order: a full product
+    // of 289 coefficients needs a size-512 transform, which has no plan.
+    let left = oracles::noise::<Gf8D>(150, 0xC803);
+    let right = oracles::noise::<Gf8D>(140, 0xC804);
+    let full = 150 + 140 - 1;
+    let mut scratch = ConvolutionScratch::<Gf8D>::new(150, 140, 1).expect("scratch");
     let mut output = vec![0_u8; full * Gf8D::BYTES];
     let result = multiply_rows_route_into::<Gf8D>(
         &mut output,
         &pack::<Gf8D>(&left),
-        4,
+        150,
         &pack::<Gf8D>(&right),
-        3,
+        140,
         1,
         full,
         ProductRoute::Transform,
@@ -725,9 +726,7 @@ fn series_inversion_matches_the_linear_solver() {
             let newton = unit
                 .inverse_mod_x_power(precision)
                 .unwrap_or_else(|error| panic!("{field} inversion at {precision}: {error}"));
-            let linear = unit
-                .inverse_mod_x_power_naive(precision)
-                .unwrap_or_else(|error| panic!("{field} linear inversion at {precision}: {error}"));
+            let linear = oracles::naive_series_inverse(unit, precision);
             assert_eq!(newton, linear, "{field} inversion at precision {precision}");
             if precision == 0 {
                 assert!(newton.is_zero(), "{field} inversion mod x^0 is zero");
@@ -748,12 +747,6 @@ fn series_inversion_matches_the_linear_solver() {
         zero_constant.inverse_mod_x_power(4),
         Err(PolynomialError::ZeroConstantTerm {
             context: "truncated power-series inversion",
-        })
-    );
-    assert_eq!(
-        zero_constant.inverse_mod_x_power_naive(4),
-        Err(PolynomialError::ZeroConstantTerm {
-            context: "linear truncated power-series inversion",
         })
     );
     let unit = oracles::noise_unit::<Gf8B>(4, 0xCE06);
