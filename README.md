@@ -108,6 +108,7 @@ GF(2) is outside that engine's scope.
 | GF((2^31 − 1)²) | `QuadMersenne31` | number-theoretic transform |
 | GF(2^31 − 1) | `Mersenne31` | embedded into `QuadMersenne31` |
 | GF(2^8), polynomial `0x11D` | `Gf8D` | schoolbook/Karatsuba only |
+
 Availability does not imply automatic selection. Goldilocks and
 QuadMersenne31 automatic products use the NTT once the shorter operand
 reaches the measured crossover, and Mersenne31 products use the embedded
