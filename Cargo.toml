@@ -1,10 +1,9 @@
 [package]
 name = "poly-ring"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT"
-publish = false
 repository = "https://github.com/nanithefkuc/poly-ring"
 description = "Univariate and multivariate polynomial arithmetic, evaluation, interpolation, and factorization over finite fields."
 readme = "README.md"
@@ -35,9 +34,6 @@ simd = ["std", "fgf/simd", "butterfly-fft?/simd"]
 # butterfly-fft's core is no_std-capable, and so is everything this feature
 # gates here.
 fft = ["dep:butterfly-fft"]
-# Optional batch/symbol-axis parallelism. Off by default; must not enter
-# default or no-std builds.
-parallel = ["std", "dep:rayon"]
 # poly-ring's own unstable surface, for benchmarks and downstream
 # experimentation. Not a compatibility promise. Distinct from fgf's
 # `internals`, which this crate deliberately does not take.
@@ -52,7 +48,6 @@ fgf = { version = "=1.2.1", default-features = false }
 # Additive-FFT transforms for subspace/coset domains, composed (never
 # re-implemented) under the default-on `fft` feature.
 butterfly-fft = { version = "=1.0.2", optional = true, default-features = false }
-rayon = { version = "=1.12.0", optional = true }
 
 [dev-dependencies]
 # Tests and benches exercise the unstable internals facade directly; a

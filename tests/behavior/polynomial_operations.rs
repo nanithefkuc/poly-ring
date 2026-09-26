@@ -290,12 +290,12 @@ fn sparse_dense_conversions_round_trip() {
 // and `reverse`/`series_divide` satisfy their defining identities.
 #[test]
 fn series_inversion_division_and_reversal_hold() {
-    use oracles::noise_unit;
+    use oracles::{naive_series_inverse, noise_unit};
 
     fn check<F: FieldKernels>() {
         let unit = noise_unit::<F>(9, 0xC303);
         let newton = unit.inverse_mod_x_power(9).expect("newton");
-        let naive = unit.inverse_mod_x_power_naive(9).expect("naive");
+        let naive = naive_series_inverse(&unit, 9);
         assert_eq!(newton, naive);
         // a · a^{-1} == 1 mod x^9.
         let one = unit.multiply_truncated(&newton, 9).expect("check product");

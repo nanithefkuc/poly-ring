@@ -12,6 +12,9 @@ use super::Polynomial;
 /// Construction normalizes the modulus to monic form. The plan is immutable;
 /// mutable intermediate storage belongs to [`ModulusScratch`], so one plan can
 /// be shared while each execution owns its workspace.
+/// Construction allocates one copy of the normalized modulus and
+/// precomputes nothing else; every operation reduces through ordinary
+/// division by the stored modulus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModulusPlan<F: FieldKernels> {
     modulus: Polynomial<F>,

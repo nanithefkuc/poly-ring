@@ -54,7 +54,6 @@
 //! | default (`std`, `simd`, `fft`) | full ring, transforms, Hasse plans, roots |
 //! | `--no-default-features` | `no_std` core ring: gcd/EEA, division, Chien, Horner, Hasse plans, sparse multivariate arithmetic, power series; no `butterfly-fft` |
 //! | `fft` without `std` | transform composition available in `no_std` builds |
-//! | `parallel` | off-by-default placeholder for batch-axis parallelism |
 //! | `internals` | unstable benchmarking surface, no compatibility promise |
 
 //! ```

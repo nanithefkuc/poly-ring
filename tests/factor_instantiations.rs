@@ -18,6 +18,8 @@ use poly_ring::{
     PolynomialError, SquareFreeFactor, series_divide, truncated_eea,
 };
 
+mod oracles;
+
 // A test-only allocator both records and refuses chosen allocations, so the
 // prepared and Euclidean routes exercise their `try_reserve` failure
 // branches deterministically. The gates are thread-local: parallel tests on
@@ -788,9 +790,7 @@ fn truncated_series_routes_hold_for<F: FieldKernels + PartialEq>() {
         let newton = series
             .inverse_mod_x_power(truncation)
             .expect("Newton inverse");
-        let naive = series
-            .inverse_mod_x_power_naive(truncation)
-            .expect("naive inverse");
+        let naive = oracles::naive_series_inverse(&series, truncation);
         assert_eq!(
             newton,
             naive,
@@ -808,19 +808,13 @@ fn truncated_series_routes_hold_for<F: FieldKernels + PartialEq>() {
         Polynomial::<F>::zero()
     );
     assert_eq!(
-        series
-            .inverse_mod_x_power_naive(0)
-            .expect("empty precision"),
+        oracles::naive_series_inverse(&series, 0),
         Polynomial::<F>::zero()
     );
 
     let zero_constant = poly::<F>(&[F::Elem::ZERO, F::Elem::ONE, element::<F>(3)]);
     assert!(matches!(
         zero_constant.inverse_mod_x_power(4),
-        Err(PolynomialError::ZeroConstantTerm { .. })
-    ));
-    assert!(matches!(
-        zero_constant.inverse_mod_x_power_naive(4),
         Err(PolynomialError::ZeroConstantTerm { .. })
     ));
     assert!(matches!(
@@ -1078,20 +1072,6 @@ fn quad_mersenne_routes_report_refused_allocations() {
                     ))
                 ),
                 "Newton series inversion reports the refused allocation"
-            );
-        });
-    }
-    // the linear series inversion
-    for &(size, skip) in &[(48, 0), (48, 1)] {
-        reject_matching(size, skip, || {
-            assert!(
-                matches!(
-                    series.inverse_mod_x_power_naive(6),
-                    Err(PolynomialError::Config(
-                        ConfigError::AllocationFailed { .. }
-                    ))
-                ),
-                "the linear series inversion reports the refused allocation"
             );
         });
     }
@@ -1458,20 +1438,6 @@ fn gf8d_routes_report_refused_allocations() {
                     ))
                 ),
                 "Newton series inversion reports the refused allocation"
-            );
-        });
-    }
-    // the linear series inversion
-    for &(size, skip) in &[(6, 0), (6, 1)] {
-        reject_matching(size, skip, || {
-            assert!(
-                matches!(
-                    series.inverse_mod_x_power_naive(6),
-                    Err(PolynomialError::Config(
-                        ConfigError::AllocationFailed { .. }
-                    ))
-                ),
-                "the linear series inversion reports the refused allocation"
             );
         });
     }

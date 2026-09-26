@@ -24,9 +24,11 @@
 //!   group admits no useful radix-two transform.
 //!
 //! `Auto` keeps the measured binary-field AFFT crossovers
-//! ([`crate::cost::select_product`]). Goldilocks prepared products select the
-//! NTT by shorter operand and batch width. The other prime-field transform
-//! routes remain explicit through the forced benchmark entry point.
+//! ([`crate::cost::select_product`]). Prepared Goldilocks and
+//! `QuadMersenne31` products select the NTT by shorter operand and batch
+//! width, and prepared Mersenne31 products select the embedded route by its
+//! own crossovers. The one-shot [`Polynomial::multiply`](super::Polynomial::multiply)
+//! path takes the same routes past its own crossovers.
 
 use alloc::vec::Vec;
 use core::marker::PhantomData;
@@ -47,7 +49,7 @@ use {
     butterfly_fft::transform::TransformPlan,
     core::any::TypeId,
     fgf::ops,
-    fgf::{Goldilocks, QuadMersenne31},
+    fgf::{Goldilocks, Mersenne31, QuadMersenne31},
 };
 
 /// A field whose polynomials the prepared product engine serves.
@@ -329,7 +331,7 @@ macro_rules! impl_ntt_domain {
 #[cfg(feature = "fft")]
 impl_ntt_domain!(
     Goldilocks => true,
-    QuadMersenne31 => false,
+    QuadMersenne31 => true,
 );
 
 /// Forward-transform both operand blocks, multiply pointwise, invert.
@@ -537,10 +539,12 @@ macro_rules! impl_karatsuba_only_domain {
     )+};
 }
 
-// Gf8D has no additive-transform kernel seat and no usable multiplicative
-// group, on every build; the prime fields join it only when the `fft`
-// feature is off.
+// Gf8D stays on the schoolbook/Karatsuba route: the additive transform
+// loses everywhere under the field-order ceiling (see
+// `bench-records/routing-gf8d-20260925.md`), so no prepared product route
+// consumes its upstream kernels.
 impl_karatsuba_only_domain!(fgf::Gf8D);
+// Without `fft`, every other field is schoolbook/Karatsuba-only.
 #[cfg(not(feature = "fft"))]
 impl_karatsuba_only_domain!(
     fgf::Gf8B,
@@ -1015,8 +1019,9 @@ fn multiply_rows_route<F: PolynomialField>(
 }
 
 /// The measured Auto rule: binary fields keep their AFFT crossovers;
-/// Goldilocks selects the NTT by shorter operand and batch width. Other
-/// transform routes stay on Karatsuba.
+/// Goldilocks and `QuadMersenne31` select the NTT by shorter operand and batch
+/// width, Mersenne31 selects its embedded route by the embedded crossovers.
+/// Fields without a transform route stay on Karatsuba.
 #[cfg(feature = "fft")]
 fn auto_uses_transform<F: PolynomialField>(
     left_count: usize,
@@ -1043,16 +1048,24 @@ fn auto_uses_transform<F: PolynomialField>(
                     crate::cost::ntt_prepared_product_crossover(batch),
                 ) == crate::cost::NttProductBackend::Ntt
         }
-        Route::Embedded | Route::None => false,
+        Route::Embedded => {
+            crate::cost::select_ntt_product(
+                left_count,
+                right_count,
+                crate::cost::ntt_prepared_product_crossover_embedded(batch),
+            ) == crate::cost::NttProductBackend::Ntt
+        }
+        Route::None => false,
     }
 }
 
 /// Return a one-shot automatic NTT product for the public ring API.
 ///
-/// The result is present when the field is `Goldilocks`, the shorter operand
-/// reaches [`crate::cost::NTT_ONESHOT_PRODUCT_CROSSOVER`], a transform plan is
-/// available, and the engine accepts the internally generated buffers. Every
-/// other case leaves route selection to the caller.
+/// The result is present when the field is `Goldilocks`,
+/// `QuadMersenne31`, or Mersenne31 (embedded in `QuadMersenne31`), the
+/// shorter operand reaches the field's one-shot crossover, a transform plan
+/// is available, and the engine accepts the internally generated buffers.
+/// Every other case leaves route selection to the caller.
 pub(crate) fn oneshot_ntt_product<F: FieldKernels>(
     left: &[u8],
     left_count: usize,
@@ -1061,18 +1074,43 @@ pub(crate) fn oneshot_ntt_product<F: FieldKernels>(
 ) -> Option<Vec<u8>> {
     #[cfg(feature = "fft")]
     {
-        if TypeId::of::<F>() != TypeId::of::<Goldilocks>() || left_count == 0 || right_count == 0 {
+        if left_count == 0 || right_count == 0 {
             return None;
         }
-        if crate::cost::select_ntt_product(
-            left_count,
-            right_count,
-            crate::cost::NTT_ONESHOT_PRODUCT_CROSSOVER,
-        ) != crate::cost::NttProductBackend::Ntt
-        {
-            return None;
+        if TypeId::of::<F>() == TypeId::of::<Goldilocks>() {
+            if crate::cost::select_ntt_product(
+                left_count,
+                right_count,
+                crate::cost::NTT_ONESHOT_PRODUCT_CROSSOVER,
+            ) != crate::cost::NttProductBackend::Ntt
+            {
+                return None;
+            }
+            return oneshot_ntt_convolve::<Goldilocks>(left, left_count, right, right_count);
         }
-        goldilocks_oneshot_convolve(left, left_count, right, right_count)
+        if TypeId::of::<F>() == TypeId::of::<QuadMersenne31>() {
+            if crate::cost::select_ntt_product(
+                left_count,
+                right_count,
+                crate::cost::NTT_ONESHOT_QM31_CROSSOVER,
+            ) != crate::cost::NttProductBackend::Ntt
+            {
+                return None;
+            }
+            return oneshot_ntt_convolve::<QuadMersenne31>(left, left_count, right, right_count);
+        }
+        if TypeId::of::<F>() == TypeId::of::<Mersenne31>() {
+            if crate::cost::select_ntt_product(
+                left_count,
+                right_count,
+                crate::cost::NTT_ONESHOT_EMBEDDED_CROSSOVER,
+            ) != crate::cost::NttProductBackend::Ntt
+            {
+                return None;
+            }
+            return mersenne31_oneshot_convolve(left, left_count, right, right_count);
+        }
+        None
     }
     #[cfg(not(feature = "fft"))]
     {
@@ -1081,9 +1119,19 @@ pub(crate) fn oneshot_ntt_product<F: FieldKernels>(
     }
 }
 
-/// Run the Goldilocks NTT engine once over freshly allocated work buffers.
+/// Allocate a zeroed one-shot work buffer, or `None` on overflow or
+/// reservation failure.
 #[cfg(feature = "fft")]
-fn goldilocks_oneshot_convolve(
+fn oneshot_buffer(bytes: usize) -> Option<Vec<u8>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(bytes).ok()?;
+    buffer.resize(bytes, 0);
+    Some(buffer)
+}
+
+/// Run the field's NTT engine once over freshly allocated work buffers.
+#[cfg(feature = "fft")]
+fn oneshot_ntt_convolve<F: ConvolutionDomain>(
     left: &[u8],
     left_count: usize,
     right: &[u8],
@@ -1091,21 +1139,13 @@ fn goldilocks_oneshot_convolve(
 ) -> Option<Vec<u8>> {
     let full = left_count.checked_add(right_count)?.checked_sub(1)?;
     let size = full.checked_next_power_of_two()?;
-    let mut route = NttRoute::<Goldilocks>::new(size, Goldilocks::BYTES)?;
-    let (operands_bytes, products_bytes, _) =
-        <Goldilocks as ConvolutionDomain>::work_bytes(size, 1).ok()?;
-    let reserve = |bytes: usize| -> Option<Vec<u8>> {
-        let mut buffer = Vec::new();
-        buffer.try_reserve_exact(bytes).ok()?;
-        buffer.resize(bytes, 0);
-        Some(buffer)
-    };
-    let mut operands = reserve(operands_bytes)?;
-    let mut products = reserve(products_bytes)?;
-    let output_bytes =
-        checked_product("polynomial product coefficients", full, Goldilocks::BYTES).ok()?;
-    let mut output = reserve(output_bytes)?;
-    ntt_rows_convolve::<Goldilocks>(
+    let mut route = NttRoute::<F>::new(size, F::BYTES)?;
+    let (operands_bytes, products_bytes, _) = F::work_bytes(size, 1).ok()?;
+    let output_bytes = checked_product("polynomial product coefficients", full, F::BYTES).ok()?;
+    let mut operands = oneshot_buffer(operands_bytes)?;
+    let mut products = oneshot_buffer(products_bytes)?;
+    let mut output = oneshot_buffer(output_bytes)?;
+    ntt_rows_convolve::<F>(
         left,
         left_count,
         right,
@@ -1117,6 +1157,44 @@ fn goldilocks_oneshot_convolve(
         &mut products,
         &mut output,
     )
+    .ok()?;
+    Some(output)
+}
+
+/// Run the embedded Mersenne31 route once over freshly allocated work
+/// buffers: embed each coefficient as a `(value, 0)` extension lane,
+/// convolve in `QuadMersenne31`, project the real limbs.
+#[cfg(feature = "fft")]
+fn mersenne31_oneshot_convolve(
+    left: &[u8],
+    left_count: usize,
+    right: &[u8],
+    right_count: usize,
+) -> Option<Vec<u8>> {
+    let full = left_count.checked_add(right_count)?.checked_sub(1)?;
+    let size = full.checked_next_power_of_two()?;
+    let mut route = <Mersenne31 as ConvolutionDomain>::build_plan(full, 1)?;
+    let (operands_bytes, products_bytes, conversion_bytes) =
+        <Mersenne31 as ConvolutionDomain>::work_bytes(size, 1).ok()?;
+    let output_bytes =
+        checked_product("polynomial product coefficients", full, Mersenne31::BYTES).ok()?;
+    let mut operands = oneshot_buffer(operands_bytes)?;
+    let mut products = oneshot_buffer(products_bytes)?;
+    let mut conversion = oneshot_buffer(conversion_bytes)?;
+    let mut output = oneshot_buffer(output_bytes)?;
+    <Mersenne31 as ConvolutionDomain>::transform_rows(TransformRows {
+        left,
+        left_count,
+        right,
+        right_count,
+        batch: 1,
+        precision: full,
+        plan: &mut route,
+        operands: &mut operands,
+        products: &mut products,
+        conversion: &mut conversion,
+        output: &mut output,
+    })
     .ok()?;
     Some(output)
 }

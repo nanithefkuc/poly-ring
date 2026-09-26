@@ -125,7 +125,8 @@ impl<F: FieldKernels> Polynomial<F> {
     /// coefficient representation. The algorithm uses absolute traces in
     /// characteristic two and quadratic characters in odd characteristic.
     /// Candidate polynomials are enumerated deterministically until a proper
-    /// divisor is found.
+    /// divisor is found. The enumeration always terminates, but its worst-case
+    /// cost is not polynomially bounded.
     ///
     /// # Errors
     ///

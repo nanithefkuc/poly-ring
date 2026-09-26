@@ -4,9 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## [1.0.0] - 2026-09-25
+
 ### Added
 
-- `poly-ring` opens at 0.1.0 as the ecosystem's single polynomial-ring
+- `poly-ring` opens at 1.0.0 as the ecosystem's single polynomial-ring
   crate, carrying the univariate ring in full plus the surfaces this
   version adds.
 - `BivariatePolynomial<F>` / `WeightedTerm` (`poly::bivariate`): the dense
@@ -49,7 +51,7 @@ All notable changes to this project are documented in this file.
   corresponding one-shot compositions.
 
 - Prime-field correctness across the ring: Karatsuba recombination,
-  Euclidean division, series inversion (Newton and naive), subproduct-tree
+  Euclidean division, Newton series inversion, subproduct-tree
   leaves, and Hasse derivatives now carry their signs and binomial factors
   through the field's characteristic instead of the characteristic-two
   shortcuts. Binary results are unchanged. Polynomial ingress
@@ -84,11 +86,18 @@ All notable changes to this project are documented in this file.
 - Goldilocks `Polynomial::multiply` and prepared `multiply_rows_into` select
   the existing number-theoretic transform at their measured crossovers.
   Smaller products retain the schoolbook and Karatsuba routes.
-- `fgf` and `butterfly-fft` resolve the published registry releases the
-  ecosystem's published closure requires: `fgf` at `=1.1.0` (the release
-  `butterfly-fft` 1.0.0 pins) and `butterfly-fft` from the registry at
-  `=1.0.0`, so one `fgf` compiles across the graph. MSRV is 1.93, the floor
-  that field release requires.
+
+- QuadMersenne31 prepared products select the number-theoretic transform at
+  the shared shorter-operand crossovers, and Mersenne31 products select the
+  embedded QuadMersenne31 route past its own measured crossovers; smaller
+  products retain the Karatsuba route.
+
+- The one-shot `Polynomial::multiply` selects the number-theoretic
+  transform for Goldilocks, `QuadMersenne31`, and Mersenne31 (embedded in
+  `QuadMersenne31`) at their measured shorter-operand crossovers. The
+  Goldilocks one-shot crossover moves 256 → 512: the earlier value no
+  longer reproduces against the current kernels. Smaller products retain
+  the schoolbook and Karatsuba routes.
 - The manifest declares its package contents with an `include` list —
   sources, tests, benches, examples, and release documents — instead of an
   exclude list, and carries `readme`, `homepage`, `categories`, and
@@ -138,3 +147,12 @@ All notable changes to this project are documented in this file.
   Correct in characteristic two (where subtraction is addition); over
   prime fields the cofactor identity `s·a + t·b = g` held only up to
   sign. Binary results are unchanged.
+
+### Removed
+
+- The `parallel` placeholder feature and its optional `rayon` dependency.
+  No source consumed it; batch-axis parallelism is not in the 1.0 surface.
+
+- `Polynomial::inverse_mod_x_power_naive` is removed. The naive series
+  solver survives only as the `naive_series_inverse` test oracle in
+  `tests/oracles.rs`; no shipped path called it.
