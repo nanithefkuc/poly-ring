@@ -121,8 +121,6 @@ Features:
   `std` — the transform core is `no_std`-capable and everything it gates here
   is too. `std` and `simd` forward to it through the weak `butterfly-fft?`
   activation only when `fft` selected the dependency.
-- `parallel` is an off-by-default placeholder: `rayon` is declared, no source
-  consumes it, and it must not enter default or `no_std` builds.
 - `internals = []` exposes this crate's own unstable surface
   (`karatsuba_multiply`, `ProductRoute`, `binomial_odd`, `element_key`, the
   affine `Y` substitution) as a re-export-only facade. It activates no

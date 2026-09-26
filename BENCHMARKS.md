@@ -12,7 +12,7 @@ Cove**; units are in the headers.
 
 | Setting | Value |
 | --- | --- |
-| Crate | `poly-ring` 1.0.0 working snapshot, same source on both hosts; fingerprint `e70e1f00f3aaec3f41a59b72abfdb4cd42ab9555e870f27c288ef1f5fef96d61` |
+| Crate | `poly-ring` 1.0.0, measured from commit `67b85b1` (code-identical through `19de741`), same source on both hosts |
 | Dependencies | `fgf` 1.2.1, `butterfly-fft` 1.0.2, Criterion 0.8.2 |
 | Build | `--all-features`, thin LTO, one codegen unit, no custom `RUSTFLAGS` |
 | Execution | `RAYON_NUM_THREADS=1`; process affinity verified |
